@@ -18,5 +18,6 @@ source_one/
 source_single/
 *.pdf
 *.txt
+!requirements.txt
 
 source_one.pdf
