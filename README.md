@@ -37,10 +37,14 @@ The current script will stop with a clear error on Python 3.12+ because Paddle r
 This version uses:
 
 - `PyMuPDF` to render PDF pages
-- `PaddleOCR` for OCR
+- `PaddleOCR` for AI OCR
+- `pytesseract` for a faster normal OCR mode
+- `RapidOCR` as a bundled fallback when Tesseract is missing
 - `OpenCV` for splitting multiple receipts on a page
 
 There is no dependency on Tesseract or Poppler anymore.
+The `ai` backend does not depend on Tesseract or Poppler.
+The `normal` backend uses Tesseract if available and falls back to RapidOCR if Tesseract is missing.
 
 ### PaddlePaddle
 
@@ -111,7 +115,7 @@ Put source PDFs into `source/`.
 Basic run:
 
 ```powershell
-python invoice_processor.py --source source --processed processed --project-name MyProject
+python invoice_processor.py --source source --processed processed --project-name MyProject --ocr-backend ai
 ```
 
 Recommended Windows setup with Python 3.11:
@@ -130,6 +134,36 @@ With Arabic or another PaddleOCR language code:
 python invoice_processor.py --source source --processed processed --project-name MyProject --lang ar
 ```
 
+Faster OCR mode with Tesseract:
+
+```powershell
+python invoice_processor.py --source source --processed processed --project-name MyProject --ocr-backend normal --tesseract-cmd "C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
+
+Faster OCR mode with automatic fallback:
+
+```powershell
+python invoice_processor.py --source source --processed processed --project-name MyProject --ocr-backend normal
+```
+
+Single-item rename mode for one document per page:
+
+```powershell
+python invoice_processor.py --source source_single --processed processed_single --project-name MyProject --single-item-per-page --ocr-backend normal
+```
+
+Export cleaned OCR images as PDFs:
+
+```powershell
+python invoice_processor.py --source source_single --processed processed_single --project-name MyProject --single-item-per-page --ocr-backend normal --export-image-mode enhanced
+```
+
+Export both original and enhanced PDFs:
+
+```powershell
+python invoice_processor.py --source source_single --processed processed_single --project-name MyProject --single-item-per-page --ocr-backend normal --export-image-mode both
+```
+
 With custom DPI:
 
 ```powershell
@@ -141,7 +175,7 @@ python invoice_processor.py --source source --processed processed --project-name
 Each extracted item is saved as:
 
 ```text
-[Type]_[Date]_[Number]_[CompanyName]_[Amount]_[ProjectName].pdf
+[Type]_[Date]_[Number]_[CompanyName]_[AmountAED]_[ProjectName].pdf
 ```
 
 If a field cannot be extracted, the script uses `Unknown`.
@@ -149,13 +183,14 @@ If a field cannot be extracted, the script uses `Unknown`.
 Example:
 
 ```text
-Invoice_2026-04-03_INV-1023_ACMETrading_125.00_MyProject.pdf
+Invoice_2026-04-03_INV-1023_ACMETrading_125.00AED_MyProject.pdf
 ```
 
 ## Notes
 
 - Document splitting is contour-based using OpenCV.
 - OCR is handled by PaddleOCR, which is generally stronger than Tesseract on varied document layouts.
+- `normal` mode now tries multiple preprocessing variants for noisy photos before OCR.
 - Field extraction uses heuristics and regex, so unusual invoice formats may still require tuning.
 - If two files resolve to the same output name, the script appends page and item suffixes.
 - The first execution may take longer because OCR models may be downloaded and initialized.

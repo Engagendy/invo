@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +11,8 @@ from typing import Any, Iterable, List, Optional, Sequence, Tuple
 import cv2
 import fitz
 import numpy as np
+from openpyxl import Workbook
+import pytesseract
 
 
 BoundingBox = Tuple[int, int, int, int]
@@ -24,6 +27,19 @@ class DocumentFields:
     amount: str = "Unknown"
 
 
+@dataclass
+class ProcessedRecord:
+    source_file: str
+    output_file: str
+    doc_type: str
+    date: str
+    number: str
+    company_name: str
+    amount: str
+    currency: str
+    project_name: str
+
+
 def resolve_base_dir() -> Path:
     return Path(__file__).resolve().parent
 
@@ -32,6 +48,17 @@ def configure_model_cache() -> None:
     cache_home = resolve_base_dir() / "models"
     cache_home.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(cache_home))
+
+
+def detect_tesseract_cmd() -> Optional[str]:
+    candidates = [
+        shutil.which("tesseract"),
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return str(candidate)
+    return None
 
 
 def validate_runtime() -> None:
@@ -139,14 +166,79 @@ def crop_with_padding(
 
 def preprocess_for_ocr(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    denoised = cv2.fastNlMeansDenoising(gray, None, 20, 7, 21)
-    return cv2.adaptiveThreshold(
+    normalized = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    contrast = clahe.apply(normalized)
+    denoised = cv2.fastNlMeansDenoising(contrast, None, 18, 7, 21)
+    sharpened = cv2.addWeighted(denoised, 1.4, cv2.GaussianBlur(denoised, (0, 0), 3), -0.4, 0)
+    binary = cv2.adaptiveThreshold(
+        sharpened,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        11,
+    )
+    return deskew_binary_image(binary)
+
+
+def preprocess_for_tesseract(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    normalized = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    contrast = clahe.apply(normalized)
+    denoised = cv2.fastNlMeansDenoising(contrast, None, 12, 7, 21)
+    binary = cv2.adaptiveThreshold(
         denoised,
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY,
         31,
-        15,
+        9,
+    )
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    return deskew_binary_image(cleaned)
+
+
+def preprocess_for_tesseract_strong(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    upscaled = cv2.resize(gray, None, fx=1.8, fy=1.8, interpolation=cv2.INTER_CUBIC)
+    normalized = cv2.normalize(upscaled, None, 0, 255, cv2.NORM_MINMAX)
+    clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
+    contrast = clahe.apply(normalized)
+    denoised = cv2.fastNlMeansDenoising(contrast, None, 18, 7, 21)
+    blur = cv2.medianBlur(denoised, 3)
+    binary = cv2.adaptiveThreshold(
+        blur,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        41,
+        7,
+    )
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    return deskew_binary_image(cleaned)
+
+
+def deskew_binary_image(binary: np.ndarray) -> np.ndarray:
+    coords = np.column_stack(np.where(binary < 250))
+    if coords.size == 0:
+        return binary
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle < -45:
+        angle += 90
+    if -0.5 < angle < 0.5:
+        return binary
+    height, width = binary.shape[:2]
+    matrix = cv2.getRotationMatrix2D((width // 2, height // 2), angle, 1.0)
+    return cv2.warpAffine(
+        binary,
+        matrix,
+        (width, height),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE,
     )
 
 
@@ -154,11 +246,108 @@ def normalize_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def contains_arabic(value: str) -> bool:
+    return any("\u0600" <= char <= "\u06FF" for char in value)
+
+
+def contains_latin(value: str) -> bool:
+    return any(("A" <= char <= "Z") or ("a" <= char <= "z") for char in value)
+
+
+def alpha_ratio(value: str) -> float:
+    if not value:
+        return 0.0
+    alnum = sum(char.isalnum() for char in value)
+    alpha = sum(char.isalpha() for char in value)
+    if alnum == 0:
+        return 0.0
+    return alpha / alnum
+
+
 def sanitize_filename_part(value: str) -> str:
     value = normalize_whitespace(value)
     value = re.sub(r"[\\/:*?\"<>|]+", "", value)
     value = re.sub(r"\s+", "", value)
     return value or "Unknown"
+
+
+def normalize_number_candidate(value: str) -> str:
+    value = normalize_whitespace(value).strip(" -:/._")
+    value = re.sub(r"[^A-Za-z0-9\-\/]", "", value)
+    prefix_match = re.match(r"^([A-Za-z]{2,}[-\/]?)(.*)$", value)
+    prefix = ""
+    suffix = value
+    if prefix_match and any(char.isdigit() for char in prefix_match.group(2)):
+        prefix = prefix_match.group(1)
+        suffix = prefix_match.group(2)
+    substitutions = str.maketrans(
+        {
+            "O": "0",
+            "o": "0",
+            "I": "1",
+            "l": "1",
+            "S": "5",
+            "B": "8",
+            "Z": "2",
+        }
+    )
+    suffix = suffix.translate(substitutions)
+    value = prefix + suffix
+    return value or "Unknown"
+
+
+def choose_number_by_type(text: str, doc_type: str) -> str:
+    lines = [normalize_whitespace(line) for line in text.splitlines() if normalize_whitespace(line)]
+
+    invoice_patterns = [
+        r"(?i)\binvoice\s*(?:no|#|number)?\s*[:;\-]?\s*([A-Z0-9OISBZl\-\/]{4,})",
+        r"(?i)\btax\s+invoice\b.*?(?:no|#|number)?\s*[:;\-]?\s*([A-Z0-9OISBZl\-\/]{4,})",
+    ]
+    receipt_patterns = [
+        r"(?i)\breceipt\s*(?:no|#|number)?\s*[:;\-]?\s*([A-Z0-9OISBZl\-\/]{4,})",
+    ]
+    generic_patterns = [
+        r"(?i)\b(?:bill|voucher|document|inv|trx|ref|serial)\s*(?:no|#|number)?\s*[:;\-]?\s*([A-Z0-9OISBZl\-\/]{3,})",
+        r"(?i)\b(?:no|number)\b\s*[:;\-]?\s*([A-Z0-9OISBZl\-\/]{3,})",
+    ]
+
+    def collect(patterns: Sequence[str]) -> List[str]:
+        values: List[str] = []
+        for line in lines:
+            for pattern in patterns:
+                for match in re.finditer(pattern, line):
+                    value = normalize_number_candidate(match.group(1))
+                    if any(char.isdigit() for char in value):
+                        values.append(value)
+        return values
+
+    invoice_values = collect(invoice_patterns)
+    receipt_values = collect(receipt_patterns)
+    generic_values = collect(generic_patterns)
+
+    if doc_type == "Invoice" and invoice_values:
+        return max(invoice_values, key=lambda item: (sum(char.isdigit() for char in item), len(item)))
+    if doc_type == "Receipt" and receipt_values:
+        return max(receipt_values, key=lambda item: (sum(char.isdigit() for char in item), len(item)))
+    if invoice_values:
+        return max(invoice_values, key=lambda item: (sum(char.isdigit() for char in item), len(item)))
+    if receipt_values:
+        return max(receipt_values, key=lambda item: (sum(char.isdigit() for char in item), len(item)))
+
+    for index, line in enumerate(lines):
+        if re.search(r"(?i)\b(?:invoice|receipt|bill|voucher|document|inv|trx|ref)\b", line):
+            for offset in range(0, 3):
+                if index + offset >= len(lines):
+                    continue
+                candidates = re.findall(r"[A-Z0-9OISBZl][A-Z0-9OISBZl\-\/]{2,}", lines[index + offset])
+                for candidate in candidates:
+                    value = normalize_number_candidate(candidate)
+                    if any(char.isdigit() for char in value):
+                        return value
+
+    if generic_values:
+        return max(generic_values, key=lambda item: (sum(char.isdigit() for char in item), len(item)))
+    return "Unknown"
 
 
 def make_ocr_engine(
@@ -209,6 +398,60 @@ def make_ocr_engines(
     ]
 
 
+def extract_text_with_tesseract(image: np.ndarray) -> Tuple[str, np.ndarray]:
+    variants = [
+        cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+        cv2.cvtColor(preprocess_for_tesseract(image), cv2.COLOR_GRAY2RGB),
+        cv2.cvtColor(preprocess_for_tesseract_strong(image), cv2.COLOR_GRAY2RGB),
+    ]
+    best_text = ""
+    best_variant = variants[0]
+    best_score = -1
+    config = "--oem 3 --psm 6"
+    for variant in variants:
+        text = pytesseract.image_to_string(variant, config=config)
+        lines = [normalize_whitespace(line) for line in text.splitlines() if normalize_whitespace(line)]
+        score = score_text(lines)
+        if score > best_score:
+            best_text = "\n".join(lines)
+            best_variant = variant
+            best_score = score
+    return best_text, best_variant
+
+
+def extract_text_with_rapidocr(image: np.ndarray) -> Tuple[str, np.ndarray]:
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError as exc:
+        raise RuntimeError(
+            "RapidOCR is not installed. Run 'pip install rapidocr-onnxruntime'."
+        ) from exc
+    variants = [
+        image,
+        cv2.cvtColor(preprocess_for_tesseract(image), cv2.COLOR_GRAY2BGR),
+        cv2.cvtColor(preprocess_for_tesseract_strong(image), cv2.COLOR_GRAY2BGR),
+    ]
+    engine = RapidOCR()
+    best_text = ""
+    best_variant = variants[0]
+    best_score = -1
+    for variant in variants:
+        result, _ = engine(variant)
+        lines: List[str] = []
+        if result:
+            for item in result:
+                if len(item) >= 2:
+                    cleaned = normalize_whitespace(str(item[1]))
+                    if cleaned:
+                        lines.append(cleaned)
+        score = score_text(lines)
+        if score > best_score:
+            best_text = "\n".join(lines)
+            best_variant = variant
+            best_score = score
+    return best_text, best_variant
+
+
 def flatten_paddle_result(result: object) -> List[str]:
     texts: List[str] = []
     if result is None:
@@ -250,12 +493,14 @@ def score_text(lines: Sequence[str]) -> int:
     return len(text) + digit_bonus + alpha_bonus
 
 
-def extract_text(image: np.ndarray, ocr_engines: Sequence[Any]) -> str:
+def extract_text(image: np.ndarray, ocr_engines: Sequence[Any]) -> Tuple[str, np.ndarray]:
     variants = [
         cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
         cv2.cvtColor(preprocess_for_ocr(image), cv2.COLOR_GRAY2RGB),
+        cv2.cvtColor(preprocess_for_tesseract_strong(image), cv2.COLOR_GRAY2RGB),
     ]
     best_lines: List[str] = []
+    best_variant = variants[0]
     best_score = -1
 
     for ocr_engine in ocr_engines:
@@ -265,9 +510,25 @@ def extract_text(image: np.ndarray, ocr_engines: Sequence[Any]) -> str:
             score = score_text(lines)
             if score > best_score:
                 best_lines = lines
+                best_variant = variant
                 best_score = score
 
-    return "\n".join(best_lines)
+    return "\n".join(best_lines), best_variant
+
+
+def extract_text_by_backend(
+    image: np.ndarray, ocr_backend: str, ocr_engines: Sequence[Any]
+) -> Tuple[str, np.ndarray]:
+    if ocr_backend == "normal":
+        tesseract_cmd = detect_tesseract_cmd()
+        if tesseract_cmd:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+            try:
+                return extract_text_with_tesseract(image)
+            except Exception:
+                pass
+        return extract_text_with_rapidocr(image)
+    return extract_text(image, ocr_engines)
 
 
 def infer_doc_type(text: str) -> str:
@@ -318,36 +579,71 @@ def parse_date(text: str) -> str:
 
 
 def parse_number(text: str) -> str:
-    patterns = [
-        r"(?i)\b(?:invoice|receipt|bill|voucher|document)\s*(?:no|#|number)?[:\s\-]*([A-Z0-9\-\/]+)",
-        r"(?i)\b(?:inv|trx|ref)\s*(?:no|#|number)?[:\s\-]*([A-Z0-9\-\/]+)",
-        r"(?i)\b(?:no|number)[:\s\-]*([A-Z0-9\-\/]{4,})",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            value = match.group(1).strip(" -:/")
-            if any(char.isdigit() for char in value):
-                return value
-    return "Unknown"
+    doc_type = infer_doc_type(text)
+    return choose_number_by_type(text, doc_type)
 
 
 def parse_amount(text: str) -> str:
-    patterns = [
-        r"(?i)\bAED\s*([0-9][0-9,]*\.?[0-9]{0,2})",
-        r"(?i)\bTotal(?:\s+Amount)?[:\s\-]*([0-9][0-9,]*\.?[0-9]{0,2})",
-        r"(?i)\bGrand\s+Total[:\s\-]*([0-9][0-9,]*\.?[0-9]{0,2})",
-    ]
-    values: List[float] = []
-    for pattern in patterns:
-        for match in re.finditer(pattern, text):
-            candidate = match.group(1).replace(",", "").strip()
+    lines = [normalize_whitespace(line) for line in text.splitlines() if normalize_whitespace(line)]
+
+    def line_values(line: str) -> List[str]:
+        found: List[str] = []
+        for token in re.findall(r"\d[\d,]*(?:\.\d+)+|\d[\d,]*", line):
+            cleaned = token.replace(",", "")
+            if cleaned.count(".") <= 1:
+                if re.fullmatch(r"\d+\.\d{1,2}", cleaned):
+                    found.append(cleaned)
+                continue
+            parts = cleaned.split(".")
+            for index in range(len(parts) - 1):
+                left = parts[index]
+                right = parts[index + 1]
+                if not left or not right:
+                    continue
+                if 1 <= len(right) <= 2:
+                    found.append(f"{left}.{right}")
+                    if len(left) > 3:
+                        found.append(f"{left[-3:]}.{right}")
+                        found.append(f"{left[-2:]}.{right}")
+        return found
+
+    scores: dict[str, int] = {}
+    counts: dict[str, int] = {}
+
+    for line in lines:
+        values = line_values(line)
+        lowered = line.lower()
+        line_bonus = 0
+        if re.search(r"(?i)\bgrand\s+total\b|\btotal\s+amount\b|\btotal\s+aed\b|\btotal\b|\bamount\s+due\b", line):
+            line_bonus += 100
+        if re.search(r"(?i)\bpayment\b|\bpaid\b|\bmembership\b", line):
+            line_bonus += 60
+        if re.search(r"(?i)\bsubtotal\b|\bsub\s*total\b", line):
+            line_bonus += 30
+        if re.search(r"(?i)\bvat\b|\btax\b", line):
+            line_bonus -= 15
+        if re.search(r"(?i)\bqty\b|\bprice\b", line):
+            line_bonus -= 10
+
+        for value in values:
             try:
-                values.append(float(candidate))
+                amount = float(value)
             except ValueError:
                 continue
-    if values:
-        return f"{max(values):.2f}"
+            if amount <= 0:
+                continue
+            normalized = f"{amount:.2f}"
+            counts[normalized] = counts.get(normalized, 0) + 1
+            scores[normalized] = scores.get(normalized, 0) + line_bonus
+
+    if scores:
+        ranked = []
+        for value, score in scores.items():
+            amount = float(value)
+            frequency_bonus = (counts.get(value, 1) - 1) * 60
+            ranked.append((score + frequency_bonus, counts.get(value, 1), amount, value))
+        ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        return ranked[0][3]
     return "Unknown"
 
 
@@ -363,6 +659,31 @@ def parse_company_name(text: str) -> str:
         "original",
         "duplicate",
     }
+    preferred_terms = {
+        "distribution",
+        "trading",
+        "company",
+        "co",
+        "corp",
+        "corporation",
+        "llc",
+        "l.l.c",
+        "limited",
+        "ltd",
+        "services",
+        "station",
+        "building",
+        "materials",
+        "transport",
+        "industries",
+        "group",
+        "market",
+        "store",
+        "shop",
+        "adnoc",
+    }
+    candidates: List[Tuple[int, str]] = []
+
     for line in text.splitlines():
         cleaned = normalize_whitespace(line)
         if len(cleaned) < 3 or len(cleaned) > 60:
@@ -376,7 +697,31 @@ def parse_company_name(text: str) -> str:
             continue
         if sum(char.isalpha() for char in cleaned) < 4:
             continue
-        return cleaned
+        score = 0
+        words = re.findall(r"[A-Za-z]+", cleaned.lower())
+        score += min(len(words), 6) * 3
+        if contains_latin(cleaned) and not contains_arabic(cleaned):
+            score += 25
+        if contains_latin(cleaned):
+            score += 10
+        if alpha_ratio(cleaned) > 0.75:
+            score += 8
+        score += sum(12 for word in words if word in preferred_terms)
+        if len(cleaned) >= 8:
+            score += 5
+        if len(words) == 1 and len(words[0]) <= 5:
+            score -= 20
+        if "_" in cleaned:
+            score -= 15
+        if re.search(r"(?i)^[a-z]{2,4}_[a-z]{2,6}$", cleaned):
+            score -= 25
+        if re.search(r"(?i)^[a-z]{2,8}$", cleaned) and cleaned.lower() not in preferred_terms:
+            score -= 18
+        candidates.append((score, cleaned))
+
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
     return "Unknown"
 
 
@@ -391,15 +736,51 @@ def extract_fields(text: str) -> DocumentFields:
 
 
 def build_output_name(fields: DocumentFields, project_name: str) -> str:
+    amount_part = fields.amount
+    if amount_part != "Unknown":
+        amount_part = f"{amount_part}AED"
     parts = [
         sanitize_filename_part(fields.doc_type),
         sanitize_filename_part(fields.date),
         sanitize_filename_part(fields.number),
         sanitize_filename_part(fields.company_name),
-        sanitize_filename_part(fields.amount),
+        sanitize_filename_part(amount_part),
         sanitize_filename_part(project_name),
     ]
     return "_".join(parts) + ".pdf"
+
+
+def write_excel_summary(records: Sequence[ProcessedRecord], output_path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Documents"
+    headers = [
+        "SourceFile",
+        "OutputFile",
+        "Type",
+        "Date",
+        "Number",
+        "CompanyName",
+        "Amount",
+        "Currency",
+        "ProjectName",
+    ]
+    sheet.append(headers)
+    for record in records:
+        sheet.append(
+            [
+                record.source_file,
+                record.output_file,
+                record.doc_type,
+                record.date,
+                record.number,
+                record.company_name,
+                record.amount,
+                record.currency,
+                record.project_name,
+            ]
+        )
+    workbook.save(output_path)
 
 
 def image_to_pdf(image: np.ndarray, output_path: Path) -> None:
@@ -414,6 +795,12 @@ def image_to_pdf(image: np.ndarray, output_path: Path) -> None:
     pdf.close()
 
 
+def ensure_bgr(image: np.ndarray) -> np.ndarray:
+    if len(image.shape) == 2:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    return image
+
+
 def iter_pdf_files(source_dir: Path) -> Iterable[Path]:
     yield from sorted(path for path in source_dir.glob("*.pdf") if path.is_file())
 
@@ -423,11 +810,14 @@ def process_pdf(
     output_dir: Path,
     project_name: str,
     ocr_engines: Sequence[Any],
+    ocr_backend: str,
     dpi: int = 300,
     save_text: bool = False,
     single_item_per_page: bool = False,
-) -> List[Path]:
+    export_image_mode: str = "original",
+) -> Tuple[List[Path], List[ProcessedRecord]]:
     output_paths: List[Path] = []
+    records: List[ProcessedRecord] = []
     pages = render_pdf_to_images(pdf_path, dpi=dpi)
 
     for page_index, page_image in enumerate(pages, start=1):
@@ -438,7 +828,7 @@ def process_pdf(
 
         for item_index, box in enumerate(boxes, start=1):
             cropped = crop_with_padding(page_image, box)
-            text = extract_text(cropped, ocr_engines)
+            text, enhanced_image = extract_text_by_backend(cropped, ocr_backend, ocr_engines)
             fields = extract_fields(text)
 
             filename = build_output_name(fields, project_name)
@@ -452,13 +842,36 @@ def process_pdf(
                 )
                 duplicate_counter += 1
 
-            image_to_pdf(cropped, output_path)
-            output_paths.append(output_path)
+            exports: List[Tuple[np.ndarray, Path]] = []
+            if export_image_mode in {"original", "both"}:
+                exports.append((cropped, output_path))
+            if export_image_mode in {"enhanced", "both"}:
+                enhanced_output = output_path
+                if export_image_mode == "both":
+                    enhanced_output = output_dir / (output_path.stem + "_enhanced.pdf")
+                exports.append((ensure_bgr(enhanced_image), enhanced_output))
+
+            for export_image, export_path in exports:
+                image_to_pdf(export_image, export_path)
+                output_paths.append(export_path)
+                records.append(
+                    ProcessedRecord(
+                        source_file=pdf_path.name,
+                        output_file=export_path.name,
+                        doc_type=fields.doc_type,
+                        date=fields.date,
+                        number=fields.number,
+                        company_name=fields.company_name,
+                        amount=fields.amount,
+                        currency="AED" if fields.amount != "Unknown" else "Unknown",
+                        project_name=project_name,
+                    )
+                )
             if save_text:
                 text_path = output_path.with_suffix(".txt")
                 text_path.write_text(text, encoding="utf-8")
 
-    return output_paths
+    return output_paths, records
 
 
 def process_folder(
@@ -471,32 +884,39 @@ def process_folder(
     save_text: bool = False,
     ocr_profile: str = "mixed",
     single_item_per_page: bool = False,
-) -> List[Path]:
+    ocr_backend: str = "ai",
+    export_image_mode: str = "original",
+) -> Tuple[List[Path], List[ProcessedRecord]]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    ocr_engines = make_ocr_engines(
-        language=language,
-        use_angle_cls=use_angle_cls,
-        ocr_profile=ocr_profile,
-    )
+    ocr_engines: Sequence[Any] = []
+    if ocr_backend == "ai":
+        ocr_engines = make_ocr_engines(
+            language=language,
+            use_angle_cls=use_angle_cls,
+            ocr_profile=ocr_profile,
+        )
     generated_files: List[Path] = []
+    records: List[ProcessedRecord] = []
 
     for pdf_path in iter_pdf_files(source_dir):
         try:
-            generated_files.extend(
-                process_pdf(
-                    pdf_path=pdf_path,
-                    output_dir=output_dir,
-                    project_name=project_name,
-                    ocr_engines=ocr_engines,
+            pdf_outputs, pdf_records = process_pdf(
+                pdf_path=pdf_path,
+                output_dir=output_dir,
+                project_name=project_name,
+                ocr_engines=ocr_engines,
+                ocr_backend=ocr_backend,
                     dpi=dpi,
                     save_text=save_text,
                     single_item_per_page=single_item_per_page,
+                    export_image_mode=export_image_mode,
                 )
-            )
+            generated_files.extend(pdf_outputs)
+            records.extend(pdf_records)
             print(f"Processed: {pdf_path.name}")
         except Exception as exc:
             print(f"Failed: {pdf_path.name} -> {exc}")
-    return generated_files
+    return generated_files, records
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -548,9 +968,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="OCR strategy: printed, handwriting, or mixed ensemble.",
     )
     parser.add_argument(
+        "--ocr-backend",
+        choices=["normal", "ai"],
+        default="ai",
+        help="Use normal OCR for faster processing or ai OCR for stronger extraction.",
+    )
+    parser.add_argument(
+        "--tesseract-cmd",
+        default="",
+        help="Optional absolute path to tesseract.exe when using --ocr-backend normal.",
+    )
+    parser.add_argument(
+        "--excel-name",
+        default="document_summary.xlsx",
+        help="Excel filename written into the processed folder.",
+    )
+    parser.add_argument(
         "--single-item-per-page",
         action="store_true",
         help="Skip document splitting and treat each PDF page as one document.",
+    )
+    parser.add_argument(
+        "--export-image-mode",
+        choices=["original", "enhanced", "both"],
+        default="original",
+        help="Export original pages, enhanced OCR images, or both.",
     )
     return parser
 
@@ -561,13 +1003,16 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.ocr_backend == "normal" and args.tesseract_cmd:
+        pytesseract.pytesseract.tesseract_cmd = args.tesseract_cmd
+
     source_dir = args.source
     output_dir = args.processed
 
     if not source_dir.exists():
         raise FileNotFoundError(f"Source folder does not exist: {source_dir}")
 
-    generated_files = process_folder(
+    generated_files, records = process_folder(
         source_dir=source_dir,
         output_dir=output_dir,
         project_name=args.project_name,
@@ -577,7 +1022,10 @@ def main() -> None:
         save_text=args.save_text,
         ocr_profile=args.ocr_profile,
         single_item_per_page=args.single_item_per_page,
+        ocr_backend=args.ocr_backend,
+        export_image_mode=args.export_image_mode,
     )
+    write_excel_summary(records, output_dir / args.excel_name)
     print(f"Generated {len(generated_files)} file(s) in {output_dir}")
 
 

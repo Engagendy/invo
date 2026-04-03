@@ -1,5 +1,8 @@
 opencv-python
 PyMuPDF
 numpy
+openpyxl
+pytesseract
+rapidocr-onnxruntime
 paddlepaddle==3.2.0
 paddleocr==3.3.3
