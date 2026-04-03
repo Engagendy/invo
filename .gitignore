@@ -15,9 +15,10 @@ processed_single/
 
 source/
 source_one/
-source_single/
 *.pdf
 *.txt
 !requirements.txt
+!source_single/
+!source_single/*.pdf
 
 source_one.pdf
