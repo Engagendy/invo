@@ -3,13 +3,21 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
-hiddenimports = ['paddleocr']
+hiddenimports = ['paddleocr', 'torch', 'transformers']
 tmp_ret = collect_all('paddleocr')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('rapidocr_onnxruntime')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('transformers')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('tokenizers')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('sentencepiece')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['D:\\invo\\invoice_processor.py'],
+    ['/Users/engagendy/RiderProjects/invo/web_app.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -28,15 +36,15 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='InvoiceProcessor',
+    name='ULTRA_FORCE',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
+    target_arch='arm64',
     codesign_identity=None,
     entitlements_file=None,
 )
@@ -47,5 +55,11 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='InvoiceProcessor',
+    name='ULTRA_FORCE',
+)
+app = BUNDLE(
+    coll,
+    name='ULTRA_FORCE.app',
+    icon=None,
+    bundle_identifier='com.ultraforce.ocr',
 )

@@ -1,7 +1,9 @@
 .venv-build/
+.venv-web-build/
 .venv311/
 __pycache__/
 *.pyc
+.DS_Store
 
 build/
 dist/
@@ -18,7 +20,19 @@ source_one/
 *.pdf
 *.txt
 !requirements.txt
+!requirements-normal.txt
+!requirements-ai.txt
+!requirements-web.txt
 !source_single/
 !source_single/*.pdf
 
 source_one.pdf
+ultra_force.db
+web_smoke_source/
+web_smoke_output/
+web_smoke_debug/
+regression_verify/
+regression_verify2/
+regression_verify3/
+regression_verify4/
+regression_verify5/
