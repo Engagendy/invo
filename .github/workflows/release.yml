@@ -11,10 +11,11 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-13
+    runs-on: macos-14
     env:
       RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}
       TROCR_MODEL_NAME: microsoft/trocr-base-handwritten
+      MAC_BUILD_ARCH: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
