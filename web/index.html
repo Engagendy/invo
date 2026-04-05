@@ -33,7 +33,7 @@
     </script>
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
     <link rel="shortcut icon" href="/assets/favicon.svg" />
-    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" />
+    <link rel="stylesheet" href="/assets/phosphor.css" />
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body class="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(211,114,59,0.18),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(57,112,92,0.15),transparent_25%),linear-gradient(135deg,#f2eadf_0%,#f6f0e7_48%,#ece3d5_100%)] font-sans text-ink">
@@ -171,42 +171,31 @@
 
     <section id="appView" class="hidden min-h-screen">
       <header class="sticky top-0 z-20 border-b border-[rgba(70,43,24,0.12)] bg-[rgba(255,250,243,0.9)] px-4 py-5 backdrop-blur md:px-7">
-        <div class="mx-auto flex max-w-[1600px] flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p class="mb-2 text-xs uppercase tracking-[0.18em] text-muted">ULTRA FORCE</p>
-            <h1 class="text-3xl font-semibold">OCR Control Center</h1>
-          </div>
-          <div class="flex flex-wrap items-center gap-3">
-            <div class="rounded-2xl bg-[rgba(165,78,45,0.08)] px-4 py-3 text-emberdark">
-              <div class="text-[11px] uppercase tracking-[0.12em] text-muted">Logged in</div>
-              <strong id="topbarUsername">Unknown</strong>
+        <div class="mx-auto flex max-w-[1600px] flex-col gap-4">
+          <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p class="mb-2 text-xs uppercase tracking-[0.18em] text-muted">ULTRA FORCE</p>
+              <h1 class="text-3xl font-semibold">OCR Control Center</h1>
             </div>
-            <button id="newProjectButton" class="rounded-full bg-gradient-to-br from-ember to-emberdark px-5 py-3 font-semibold text-white">Add Project</button>
-            <button id="logoutButton" class="rounded-full bg-[rgba(165,78,45,0.1)] px-5 py-3 font-semibold text-emberdark">Logout</button>
+            <div class="flex flex-wrap items-center gap-3">
+              <div class="rounded-2xl bg-[rgba(165,78,45,0.08)] px-4 py-3 text-emberdark">
+                <div class="text-[11px] uppercase tracking-[0.12em] text-muted">Logged in</div>
+                <strong id="topbarUsername">Unknown</strong>
+              </div>
+              <button id="newProjectButton" class="rounded-full bg-gradient-to-br from-ember to-emberdark px-5 py-3 font-semibold text-white">Add Project</button>
+              <button id="logoutButton" class="rounded-full bg-[rgba(165,78,45,0.1)] px-5 py-3 font-semibold text-emberdark">Logout</button>
+            </div>
           </div>
-        </div>
-      </header>
-
-      <div class="mx-auto grid max-w-[1600px] gap-6 px-4 py-6 md:px-7 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <aside class="rounded-[22px] border border-[rgba(70,43,24,0.12)] bg-[rgba(255,248,239,0.7)] p-4 shadow-soft backdrop-blur">
-          <div class="mb-5">
-            <p class="mb-2 text-xs uppercase tracking-[0.18em] text-muted">Navigation</p>
-            <nav class="grid gap-2">
+          <div>
+            <nav class="flex flex-wrap gap-2">
               <button data-view-target="home" class="nav-button active rounded-2xl px-4 py-3 text-left font-semibold text-ink">Projects</button>
               <button data-view-target="system" class="nav-button rounded-2xl px-4 py-3 text-left font-semibold text-ink">System Status</button>
             </nav>
           </div>
-          <div>
-            <div class="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <p class="text-xs uppercase tracking-[0.18em] text-muted">Recent</p>
-                <h2 class="text-lg font-semibold">Projects</h2>
-              </div>
-            </div>
-            <div id="sidebarProjectList" class="grid gap-2"></div>
-          </div>
-        </aside>
+        </div>
+      </header>
 
+      <div class="mx-auto max-w-[1600px] px-4 py-6 md:px-7">
         <main class="min-w-0">
           <section id="homeView" class="space-y-6">
             <div class="rounded-[22px] border border-[rgba(70,43,24,0.12)] bg-[rgba(255,251,244,0.92)] p-6 shadow-soft backdrop-blur">
@@ -339,6 +328,13 @@
                       </div>
                     </label>
                     <label class="grid gap-2">
+                      <span class="text-sm font-semibold text-muted">Processed Source Archive Folder</span>
+                      <div class="grid grid-cols-[1fr_auto] gap-2">
+                        <input id="archiveSourceDir" class="rounded-2xl border border-[rgba(77,49,29,0.15)] bg-[#fffaf1] px-4 py-3" type="text" placeholder="/path/to/archive-processed-source" />
+                        <button data-pick="archive" class="rounded-full bg-[rgba(165,78,45,0.1)] px-4 py-3 font-semibold text-emberdark">Choose</button>
+                      </div>
+                    </label>
+                    <label class="grid gap-2">
                       <span class="text-sm font-semibold text-muted">Project Name</span>
                       <input id="projectName" class="rounded-2xl border border-[rgba(77,49,29,0.15)] bg-[#fffaf1] px-4 py-3" type="text" />
                     </label>
@@ -387,6 +383,7 @@
                     <label class="flex min-h-[48px] items-center gap-3 rounded-2xl border border-[rgba(70,43,24,0.12)] bg-white px-4 py-3 text-sm font-semibold text-muted"><input id="singleItemPerPage" class="h-4 w-4" type="checkbox" /> Single item per page</label>
                     <label class="flex min-h-[48px] items-center gap-3 rounded-2xl border border-[rgba(70,43,24,0.12)] bg-white px-4 py-3 text-sm font-semibold text-muted"><input id="saveText" class="h-4 w-4" type="checkbox" /> Save OCR text files</label>
                     <label class="flex min-h-[48px] items-center gap-3 rounded-2xl border border-[rgba(70,43,24,0.12)] bg-white px-4 py-3 text-sm font-semibold text-muted"><input id="useAngleCls" class="h-4 w-4" type="checkbox" /> Use angle classification</label>
+                    <label class="flex min-h-[48px] items-center gap-3 rounded-2xl border border-[rgba(70,43,24,0.12)] bg-white px-4 py-3 text-sm font-semibold text-muted"><input id="moveProcessedSource" class="h-4 w-4" type="checkbox" /> Move processed source PDFs to archive</label>
                   </div>
                 </section>
 
@@ -465,6 +462,15 @@
                     <span id="jobStatus" class="rounded-full bg-[rgba(57,112,92,0.12)] px-4 py-2 font-semibold text-[#275b4a]">Idle</span>
                   </div>
                 </div>
+                <div id="runProgressPanel" class="mt-4 hidden rounded-[22px] border border-[rgba(70,43,24,0.12)] bg-[#fff7ef] p-4">
+                  <div class="flex items-start gap-4">
+                    <div class="loader-spinner h-8 w-8 shrink-0"></div>
+                    <div class="min-w-0">
+                      <h4 id="runProgressTitle" class="text-base font-semibold">Processing OCR</h4>
+                      <p id="runProgressText" class="mt-1 text-sm leading-6 text-muted">Extracting data and generating output files. This can take a bit on larger folders.</p>
+                    </div>
+                  </div>
+                </div>
                 <div id="resultsMeta" class="mt-4 text-sm text-muted">No run yet.</div>
               </div>
 
@@ -489,6 +495,7 @@
                         <th class="px-4 py-3 font-semibold">Number</th>
                         <th class="px-4 py-3 font-semibold">Company</th>
                         <th class="px-4 py-3 font-semibold">Amount</th>
+                        <th class="px-4 py-3 font-semibold">Confidence</th>
                       </tr>
                     </thead>
                     <tbody></tbody>
@@ -524,8 +531,14 @@
                     <button id="exportResultsExcelButton" class="rounded-full bg-gradient-to-br from-ember to-emberdark px-4 py-2 text-sm font-semibold text-white">Export Excel</button>
                   </div>
                 </div>
-                <div class="mb-4 grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_220px_220px_auto]">
+                <div class="mb-4 grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_180px_220px_220px_auto]">
                   <input id="historySearch" class="rounded-2xl border border-[rgba(77,49,29,0.15)] bg-[#fffaf1] px-4 py-3 text-sm" type="text" placeholder="Search source, output, number, company, amount..." />
+                  <select id="historyConfidenceFilter" class="rounded-2xl border border-[rgba(77,49,29,0.15)] bg-[#fffaf1] px-4 py-3 text-sm">
+                    <option value="">All Confidence</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
                   <select id="historyTypeFilter" class="rounded-2xl border border-[rgba(77,49,29,0.15)] bg-[#fffaf1] px-4 py-3 text-sm">
                     <option value="">All Types</option>
                   </select>
@@ -548,6 +561,7 @@
                         <th class="px-4 py-3 font-semibold">Company</th>
                         <th class="px-4 py-3 font-semibold">Amount</th>
                         <th class="px-4 py-3 font-semibold">Currency</th>
+                        <th class="px-4 py-3 font-semibold">Confidence</th>
                         <th class="px-4 py-3 font-semibold">Edit</th>
                       </tr>
                     </thead>
@@ -585,6 +599,7 @@
                         <th class="px-4 py-3 font-semibold">Type</th>
                         <th class="px-4 py-3 font-semibold">Date</th>
                         <th class="px-4 py-3 font-semibold">Number</th>
+                        <th class="px-4 py-3 font-semibold">Confidence</th>
                       </tr>
                     </thead>
                     <tbody></tbody>

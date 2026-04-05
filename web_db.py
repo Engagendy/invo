@@ -95,6 +95,7 @@ class DocumentRecord(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     source_file: Mapped[str] = mapped_column(String(255))
     source_path: Mapped[str] = mapped_column(Text, default="")
+    source_hash: Mapped[str] = mapped_column(String(64), default="")
     output_file: Mapped[str] = mapped_column(String(255))
     output_path: Mapped[str] = mapped_column(Text, default="")
     enhanced_output_path: Mapped[str] = mapped_column(Text, default="")
@@ -106,6 +107,8 @@ class DocumentRecord(Base):
     company_name: Mapped[str] = mapped_column(String(255), default="Unknown")
     amount: Mapped[str] = mapped_column(String(120), default="Unknown")
     currency: Mapped[str] = mapped_column(String(50), default="Unknown")
+    confidence_score: Mapped[int] = mapped_column(Integer, default=0)
+    confidence_label: Mapped[str] = mapped_column(String(32), default="low")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     project: Mapped[Project] = relationship(back_populates="documents")
@@ -138,6 +141,18 @@ def ensure_compatible_schema() -> None:
     if "source_path" not in columns:
         statements.append(
             "ALTER TABLE document_records ADD COLUMN source_path TEXT DEFAULT ''"
+        )
+    if "source_hash" not in columns:
+        statements.append(
+            "ALTER TABLE document_records ADD COLUMN source_hash TEXT DEFAULT ''"
+        )
+    if "confidence_score" not in columns:
+        statements.append(
+            "ALTER TABLE document_records ADD COLUMN confidence_score INTEGER DEFAULT 0"
+        )
+    if "confidence_label" not in columns:
+        statements.append(
+            "ALTER TABLE document_records ADD COLUMN confidence_label TEXT DEFAULT 'low'"
         )
     if statements:
         with engine.begin() as connection:

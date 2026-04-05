@@ -10,6 +10,23 @@ APP_DIR="${DIST_DIR}/${APP_NAME}"
 OS_NAME="$(uname -s)"
 MAC_BUILD_ARCH="${MAC_BUILD_ARCH:-auto}"
 TROCR_MODEL_NAME="${TROCR_MODEL_NAME:-microsoft/trocr-base-handwritten}"
+FAST_RELEASE="${FAST_RELEASE:-0}"
+REQ_FINGERPRINT_FILE="${VENV_DIR}/.requirements-fingerprint"
+
+normalize_fast_release() {
+  case "${FAST_RELEASE}" in
+    1|true|TRUE|yes|YES) echo "1" ;;
+    *) echo "0" ;;
+  esac
+}
+
+requirements_fingerprint() {
+  {
+    cat "${ROOT_DIR}/requirements-ai.txt"
+    cat "${ROOT_DIR}/requirements-web.txt"
+    printf '%s\n%s\n%s\n' "${OS_NAME}" "${TROCR_MODEL_NAME}" "${FAST_RELEASE}"
+  } | shasum -a 256 | awk '{print $1}'
+}
 
 copy_trocr_cache() {
   local destination_base="$1"
@@ -44,6 +61,7 @@ resolve_python_cmd() {
   echo "${PYTHON_BIN}"
 }
 
+FAST_RELEASE="$(normalize_fast_release)"
 PYTHON_CMD="$(resolve_python_cmd)"
 BUILD_MACHINE="$(uname -m)"
 
@@ -61,59 +79,68 @@ if [[ "${OS_NAME}" == "Darwin" ]]; then
   echo "Using Python command: ${PYTHON_CMD}"
 fi
 
-eval "${PYTHON_CMD} -m venv \"${VENV_DIR}\""
+if [[ ! -d "${VENV_DIR}" ]]; then
+  eval "${PYTHON_CMD} -m venv \"${VENV_DIR}\""
+fi
 source "${VENV_DIR}/bin/activate"
 
-python -m pip install --upgrade pip
-python -m pip install -r "${ROOT_DIR}/requirements-ai.txt"
-python -m pip install -r "${ROOT_DIR}/requirements-web.txt"
-if [[ "${OS_NAME}" == "Darwin" ]]; then
-  python -m pip install "numpy==1.26.4" "paddlepaddle==3.0.0" "PyYAML==6.0.2"
-else
-  python -m pip install "paddlepaddle==3.2.0" "PyYAML==6.0.2"
+CURRENT_FINGERPRINT="$(requirements_fingerprint)"
+PREVIOUS_FINGERPRINT=""
+if [[ -f "${REQ_FINGERPRINT_FILE}" ]]; then
+  PREVIOUS_FINGERPRINT="$(cat "${REQ_FINGERPRINT_FILE}")"
 fi
-python -m pip install pyinstaller
 
-python -c "from transformers import TrOCRProcessor, VisionEncoderDecoderModel; model='${TROCR_MODEL_NAME}'; TrOCRProcessor.from_pretrained(model); VisionEncoderDecoderModel.from_pretrained(model, use_safetensors=True)"
+if [[ "${CURRENT_FINGERPRINT}" != "${PREVIOUS_FINGERPRINT}" ]]; then
+  python -m pip install --upgrade pip
+  python -m pip install -r "${ROOT_DIR}/requirements-ai.txt"
+  python -m pip install -r "${ROOT_DIR}/requirements-web.txt"
+  if [[ "${OS_NAME}" == "Darwin" ]]; then
+    python -m pip install "numpy==1.26.4" "paddlepaddle==3.0.0" "PyYAML==6.0.2"
+  else
+    python -m pip install "paddlepaddle==3.2.0" "PyYAML==6.0.2"
+  fi
+  python -m pip install pyinstaller
+  printf '%s' "${CURRENT_FINGERPRINT}" > "${REQ_FINGERPRINT_FILE}"
+else
+  echo "Reusing cached build environment"
+fi
+
+python -c "from pathlib import Path; from transformers import TrOCRProcessor, VisionEncoderDecoderModel; model='${TROCR_MODEL_NAME}'; normalized=model.replace('/', '--'); candidates=[Path.home()/'.cache'/'huggingface'/'hub'/f'models--{normalized}', Path.home()/'Library'/'Caches'/'huggingface'/'hub'/f'models--{normalized}']; existing=next((p for p in candidates if p.exists()), None); print('Reusing cached TrOCR model' if existing else 'Downloading TrOCR model'); TrOCRProcessor.from_pretrained(model); VisionEncoderDecoderModel.from_pretrained(model, use_safetensors=True)"
+
+PYINSTALLER_ARGS=(
+  --noconfirm
+  --name "${APP_NAME}"
+  --collect-all paddleocr
+  --collect-all rapidocr_onnxruntime
+  --hidden-import paddleocr
+  --hidden-import torch
+  --hidden-import transformers
+  --hidden-import transformers.models.trocr.processing_trocr
+  --hidden-import transformers.models.trocr.modeling_trocr
+  --hidden-import transformers.models.vision_encoder_decoder.modeling_vision_encoder_decoder
+  --hidden-import tokenizers
+  --hidden-import sentencepiece
+  --hidden-import safetensors
+)
+
+if [[ "${FAST_RELEASE}" != "1" ]]; then
+  PYINSTALLER_ARGS+=(--clean)
+else
+  echo "FAST_RELEASE enabled: reusing PyInstaller build cache"
+fi
 
 if [[ "${OS_NAME}" == "Darwin" ]]; then
   pyinstaller \
-    --noconfirm \
-    --clean \
-    --name "${APP_NAME}" \
+    "${PYINSTALLER_ARGS[@]}" \
     --windowed \
     --osx-bundle-identifier "com.ultraforce.ocr" \
     --target-arch "${MAC_BUILD_ARCH}" \
-    --collect-all paddleocr \
-    --collect-all rapidocr_onnxruntime \
-    --hidden-import paddleocr \
-    --hidden-import torch \
-    --hidden-import transformers \
-    --hidden-import transformers.models.trocr.processing_trocr \
-    --hidden-import transformers.models.trocr.modeling_trocr \
-    --hidden-import transformers.models.vision_encoder_decoder.modeling_vision_encoder_decoder \
-    --hidden-import tokenizers \
-    --hidden-import sentencepiece \
-    --hidden-import safetensors \
     "${ROOT_DIR}/web_app.py"
   APP_DIR="${DIST_DIR}/${APP_NAME}.app/Contents/MacOS"
 else
   pyinstaller \
-    --noconfirm \
-    --clean \
-    --name "${APP_NAME}" \
+    "${PYINSTALLER_ARGS[@]}" \
     --onedir \
-    --collect-all paddleocr \
-    --collect-all rapidocr_onnxruntime \
-    --hidden-import paddleocr \
-    --hidden-import torch \
-    --hidden-import transformers \
-    --hidden-import transformers.models.trocr.processing_trocr \
-    --hidden-import transformers.models.trocr.modeling_trocr \
-    --hidden-import transformers.models.vision_encoder_decoder.modeling_vision_encoder_decoder \
-    --hidden-import tokenizers \
-    --hidden-import sentencepiece \
-    --hidden-import safetensors \
     "${ROOT_DIR}/web_app.py"
 fi
 

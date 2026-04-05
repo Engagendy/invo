@@ -25,7 +25,7 @@ if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" (
 )
 
 echo [4/4] Writing checksums
-powershell -NoProfile -Command "$files = @('%ROOT_DIR%dist\%ZIP_NAME%'); if (Test-Path '%ROOT_DIR%dist\%SETUP_NAME%') { $files += '%ROOT_DIR%dist\%SETUP_NAME%' }; Get-FileHash -Algorithm SHA256 $files | ForEach-Object { "" + $_.Hash.ToLower() + ' *' + [System.IO.Path]::GetFileName($_.Path) } | Set-Content '%ROOT_DIR%dist\%CHECKSUM_NAME%'"
+powershell -NoProfile -Command "$files = @(); $files += '%ROOT_DIR%dist\%ZIP_NAME%'; if (Test-Path '%ROOT_DIR%dist\%SETUP_NAME%') { $files += '%ROOT_DIR%dist\%SETUP_NAME%' }; $lines = foreach ($file in $files) { $hash = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLower(); $name = [System.IO.Path]::GetFileName($file); '{0} *{1}' -f $hash, $name }; Set-Content -Path '%ROOT_DIR%dist\%CHECKSUM_NAME%' -Value $lines"
 if errorlevel 1 exit /b 1
 
 echo.

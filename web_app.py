@@ -327,6 +327,7 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
     generated_files: List[Path] = []
     records: List[processor.ProcessedRecord] = []
     processed_source_paths: List[Path] = []
+    duplicate_hashes: set[str] = set()
     try:
         with JOBS_LOCK:
             job.status = "running"
@@ -350,6 +351,15 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
         if not source_dir.exists():
             raise FileNotFoundError(f"Source folder does not exist: {source_dir}")
 
+        with db_session() as session:
+            if job.project_id:
+                duplicate_hashes = {
+                    row[0]
+                    for row in session.query(DocumentRecord.source_hash)
+                    .filter(DocumentRecord.project_id == job.project_id, DocumentRecord.source_hash != "")
+                    .all()
+                }
+
         generated_files, records = processor.process_folder(
             source_dir=source_dir,
             output_dir=output_dir,
@@ -371,6 +381,7 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
                 job, output_paths, completed_records
             ),
             should_cancel=lambda: job_should_cancel(job),
+            should_skip=lambda pdf_path: processor.compute_file_sha256(pdf_path) in duplicate_hashes,
         )
         processed_source_paths = sorted(
             {
@@ -452,12 +463,15 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
                         existing_by_key[record_key] = db_record
                     db_record.source_file = record.source_file
                     db_record.source_path = record.source_path
+                    db_record.source_hash = record.source_hash
                     db_record.doc_type = record.doc_type
                     db_record.date = record.date
                     db_record.number = record.number
                     db_record.company_name = record.company_name
                     db_record.amount = record.amount
                     db_record.currency = record.currency
+                    db_record.confidence_score = record.confidence_score
+                    db_record.confidence_label = record.confidence_label
                     if output_file.stem.endswith("_enhanced"):
                         db_record.enhanced_output_path = str(output_file)
                     else:
@@ -742,6 +756,7 @@ def update_document(
             project.project_name,
             project.naming_pattern,
         )
+        confidence_score, confidence_label = processor.compute_confidence(fields)
 
         current_output_path = Path(document.output_path).expanduser() if document.output_path else None
         if current_output_path and current_output_path.exists():
@@ -768,6 +783,8 @@ def update_document(
         document.company_name = fields.company_name
         document.amount = fields.amount
         document.currency = fields.currency
+        document.confidence_score = confidence_score
+        document.confidence_label = confidence_label
         session.flush()
         session.refresh(document)
 
@@ -777,6 +794,7 @@ def update_document(
                 "created_at": document.created_at.isoformat() if document.created_at else "",
                 "source_file": document.source_file,
                 "source_path": document.source_path,
+                "source_hash": document.source_hash,
                 "output_file": document.output_file,
                 "output_path": document.output_path,
                 "enhanced_output_path": document.enhanced_output_path,
@@ -788,6 +806,8 @@ def update_document(
                 "company_name": document.company_name,
                 "amount": document.amount,
                 "currency": document.currency,
+                "confidence_score": document.confidence_score,
+                "confidence_label": document.confidence_label,
             }
         }
 
@@ -817,6 +837,7 @@ def project_documents(project_id: int, x_auth_token: str = Header(default="")) -
                     "created_at": document.created_at.isoformat() if document.created_at else "",
                     "source_file": document.source_file,
                     "source_path": document.source_path,
+                    "source_hash": document.source_hash,
                     "output_file": document.output_file,
                     "output_path": document.output_path,
                     "enhanced_output_path": document.enhanced_output_path,
@@ -828,6 +849,8 @@ def project_documents(project_id: int, x_auth_token: str = Header(default="")) -
                     "company_name": document.company_name,
                     "amount": document.amount,
                     "currency": document.currency,
+                    "confidence_score": document.confidence_score,
+                    "confidence_label": document.confidence_label,
                 }
             )
         return {"documents": payload}
@@ -990,7 +1013,7 @@ def get_file(path: str, token: str = "", x_auth_token: str = Header(default=""))
 
 
 class PickFolderRequest(BaseModel):
-    purpose: Literal["source", "output", "debug"] = "source"
+    purpose: Literal["source", "output", "debug", "archive"] = "source"
 
 
 @app.post("/api/pick-folder")
@@ -999,6 +1022,7 @@ def pick_folder(request: PickFolderRequest) -> Dict[str, str]:
         "source": "Choose source folder",
         "output": "Choose output folder",
         "debug": "Choose debug image folder",
+        "archive": "Choose processed source archive folder",
     }[request.purpose]
     try:
         path = choose_folder_native(prompt)

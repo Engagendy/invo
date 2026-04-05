@@ -1,0 +1,17 @@
+.ph {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  vertical-align: middle;
+}
+
+.ph-arrow-up-right {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cg fill='none' stroke='%23a54e2d' stroke-linecap='round' stroke-linejoin='round' stroke-width='18'%3E%3Cpath d='M216 56v120a16 16 0 0 1-16 16H80'/%3E%3Cpath d='M104 152L208 48'/%3E%3Cpath d='M152 48h56v56'/%3E%3Cpath d='M176 104v72a16 16 0 0 1-16 16H40a16 16 0 0 1-16-16V56a16 16 0 0 1 16-16h72'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+.ph-copy {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cg fill='none' stroke='%23a54e2d' stroke-linecap='round' stroke-linejoin='round' stroke-width='18'%3E%3Crect x='88' y='88' width='120' height='120' rx='16'/%3E%3Cpath d='M168 88V56a16 16 0 0 0-16-16H56A16 16 0 0 0 40 56v96a16 16 0 0 0 16 16h32'/%3E%3C/g%3E%3C/svg%3E");
+}

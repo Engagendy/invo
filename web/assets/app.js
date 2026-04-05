@@ -14,8 +14,10 @@ const state = {
   historySearch: "",
   historyTypeFilter: "",
   historyCompanyFilter: "",
+  historyConfidenceFilter: "",
   historyPage: 1,
   models: [],
+  modelRefreshTimer: null,
 };
 
 const HISTORY_PAGE_SIZE = 10;
@@ -63,6 +65,16 @@ function showLoading(title, text) {
 
 function hideLoading() {
   el("loadingOverlay").classList.add("hidden");
+}
+
+function showRunProgress(title, text) {
+  el("runProgressTitle").textContent = title;
+  el("runProgressText").textContent = text;
+  el("runProgressPanel").classList.remove("hidden");
+}
+
+function hideRunProgress() {
+  el("runProgressPanel").classList.add("hidden");
 }
 
 function openEditResultModal(document) {
@@ -143,6 +155,7 @@ function fields() {
     source_dir: el("sourceDir").value.trim(),
     output_dir: el("outputDir").value.trim(),
     debug_image_dir: el("debugImageDir").value.trim(),
+    archive_source_dir: el("archiveSourceDir").value.trim(),
     project_name: el("projectName").value.trim(),
     ocr_backend: el("ocrBackend").value,
     handwriting_backend: el("handwritingBackend").value,
@@ -155,6 +168,7 @@ function fields() {
     single_item_per_page: el("singleItemPerPage").checked,
     save_text: el("saveText").checked,
     use_angle_cls: el("useAngleCls").checked,
+    move_processed_source: el("moveProcessedSource").checked,
     excel_name: el("excelName").value.trim(),
   };
 }
@@ -164,6 +178,7 @@ function emptyProjectSettings() {
     source_dir: "",
     output_dir: "",
     debug_image_dir: "",
+    archive_source_dir: "",
     project_name: "ULTRA FORCE",
     ocr_backend: "normal",
     handwriting_backend: "none",
@@ -176,6 +191,7 @@ function emptyProjectSettings() {
     single_item_per_page: true,
     save_text: true,
     use_angle_cls: true,
+    move_processed_source: false,
     excel_name: "document_summary.xlsx",
   };
 }
@@ -189,6 +205,7 @@ function applySettings(settings) {
   el("sourceDir").value = merged.source_dir || "";
   el("outputDir").value = merged.output_dir || "";
   el("debugImageDir").value = merged.debug_image_dir || "";
+  el("archiveSourceDir").value = merged.archive_source_dir || "";
   el("projectName").value = merged.project_name || "ULTRA FORCE";
   el("ocrBackend").value = merged.ocr_backend;
   el("handwritingBackend").value = merged.handwriting_backend;
@@ -201,6 +218,7 @@ function applySettings(settings) {
   el("singleItemPerPage").checked = merged.single_item_per_page;
   el("saveText").checked = merged.save_text;
   el("useAngleCls").checked = merged.use_angle_cls;
+  el("moveProcessedSource").checked = merged.move_processed_source;
   el("excelName").value = merged.excel_name;
   updateNamingPreview();
 }
@@ -336,8 +354,22 @@ function renderModels() {
   });
 }
 
+function syncModelRefreshTimer() {
+  const hasDownloading = state.models.some((item) => item.status === "downloading");
+  if (hasDownloading && !state.modelRefreshTimer) {
+    state.modelRefreshTimer = setInterval(loadModels, 4000);
+  }
+  if (!hasDownloading && state.modelRefreshTimer) {
+    clearInterval(state.modelRefreshTimer);
+    state.modelRefreshTimer = null;
+  }
+}
+
 function renderSidebarProjects() {
   const container = el("sidebarProjectList");
+  if (!container) {
+    return;
+  }
   container.innerHTML = "";
   if (state.projects.length === 0) {
     const empty = document.createElement("div");
@@ -416,6 +448,7 @@ function renderDashboard() {
 
 function updateRunAvailability() {
   const button = el("runJob");
+  const stopButton = el("stopJob");
   const quickButton = el("projectRunNowButton");
   const hint = el("runHint");
   const hasProject = Boolean(state.selectedProjectId);
@@ -425,6 +458,9 @@ function updateRunAvailability() {
     node.style.opacity = hasProject ? "1" : "0.55";
     node.style.cursor = hasProject ? "pointer" : "not-allowed";
   });
+  stopButton.disabled = !state.jobId;
+  stopButton.style.opacity = state.jobId ? "1" : "0.55";
+  stopButton.style.cursor = state.jobId ? "pointer" : "not-allowed";
 
   hint.textContent = hasProject
     ? "Run OCR for the selected project."
@@ -456,6 +492,7 @@ function renderProjectDetail() {
     ["Source Folder", settings.source_dir || "-"],
     ["Output Folder", settings.output_dir || "-"],
     ["Debug Folder", settings.debug_image_dir || "-"],
+    ["Archive Folder", settings.archive_source_dir || "-"],
     ["OCR Profile", settings.ocr_profile],
     ["Handwriting", settings.handwriting_backend],
     ["TrOCR Model", settings.trocr_model],
@@ -463,6 +500,7 @@ function renderProjectDetail() {
     ["Language", settings.lang],
     ["DPI", String(settings.dpi)],
     ["Excel", settings.excel_name],
+    ["Move Processed Source", settings.move_processed_source ? "Enabled" : "Disabled"],
   ];
   el("projectSettingsSummary").innerHTML = items
     .map(
@@ -496,6 +534,7 @@ async function loadModels() {
   const payload = await fetchJson("/api/models");
   state.models = payload.models;
   renderModels();
+  syncModelRefreshTimer();
 }
 
 async function downloadModel(modelName) {
@@ -543,6 +582,7 @@ async function pickFolder(purpose) {
     if (purpose === "source") el("sourceDir").value = payload.path;
     if (purpose === "output") el("outputDir").value = payload.path;
     if (purpose === "debug") el("debugImageDir").value = payload.path;
+    if (purpose === "archive") el("archiveSourceDir").value = payload.path;
   } catch (error) {
     showSweetAlert("Folder Picker Error", error.message, "error");
   } finally {
@@ -556,6 +596,8 @@ function renderJob(job) {
   el("resultsMeta").textContent =
     job.status === "completed"
       ? `${job.records.length} records, ${job.generated_files.length} files${job.excel_path ? `, Excel: ${job.excel_path}` : ""}`
+      : job.status === "cancelled"
+        ? `Run cancelled. ${job.records.length} result rows were produced before stopping.`
       : job.status === "failed"
         ? `Run failed: ${job.error}`
         : "Run in progress.";
@@ -572,6 +614,7 @@ function renderJob(job) {
       <td class="px-4 py-4">${record.number}</td>
       <td class="px-4 py-4">${record.company_name}</td>
       <td class="px-4 py-4">${record.amount}</td>
+      <td class="px-4 py-4">${confidenceBadge(record.confidence_label, record.confidence_score)}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -667,6 +710,12 @@ function formatDateTime(value) {
   return `${day}/${month}/${year}`;
 }
 
+function confidenceBadge(label, score) {
+  const normalized = label || "low";
+  const safeScore = Number.isFinite(Number(score)) ? Number(score) : 0;
+  return `<span class="confidence-badge confidence-${normalized}" title="Confidence score: ${safeScore}">${normalized} ${safeScore}</span>`;
+}
+
 function populateHistoryFilters(documents) {
   const typeFilter = el("historyTypeFilter");
   const companyFilter = el("historyCompanyFilter");
@@ -713,7 +762,8 @@ function getFilteredHistory(documents) {
         .includes(query);
     const matchesType = !state.historyTypeFilter || item.doc_type === state.historyTypeFilter;
     const matchesCompany = !state.historyCompanyFilter || item.company_name === state.historyCompanyFilter;
-    return matchesQuery && matchesType && matchesCompany;
+    const matchesConfidence = !state.historyConfidenceFilter || item.confidence_label === state.historyConfidenceFilter;
+    return matchesQuery && matchesType && matchesCompany && matchesConfidence;
   });
 }
 
@@ -762,6 +812,7 @@ function renderHistory(documents) {
       <td class="px-4 py-4">${item.company_name}</td>
       <td class="px-4 py-4">${item.amount}</td>
       <td class="px-4 py-4">${item.currency}</td>
+      <td class="px-4 py-4">${confidenceBadge(item.confidence_label, item.confidence_score)}</td>
       <td class="px-4 py-4"><button data-edit-history-id="${item.id}" class="rounded-full bg-[rgba(165,78,45,0.1)] px-3 py-2 text-xs font-semibold text-emberdark">Edit</button></td>
     `;
     tbody.appendChild(tr);
@@ -811,6 +862,7 @@ function renderDocuments(documents) {
       <td class="px-4 py-4">${item.doc_type}</td>
       <td class="px-4 py-4">${item.date}</td>
       <td class="px-4 py-4">${item.number}</td>
+      <td class="px-4 py-4">${confidenceBadge(item.confidence_label, item.confidence_score)}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -831,6 +883,7 @@ function resetJobPanels() {
   el("logs").textContent = "";
   el("resultsMeta").textContent = "No run yet.";
   el("resultsTable").querySelector("tbody").innerHTML = "";
+  hideRunProgress();
 }
 
 function resetProjectForm() {
@@ -840,6 +893,7 @@ function resetProjectForm() {
   state.historySearch = "";
   state.historyTypeFilter = "";
   state.historyCompanyFilter = "";
+  state.historyConfidenceFilter = "";
   state.historyPage = 1;
   el("projectFormTitle").textContent = "New Project";
   el("projectRecordName").value = "ULTRA FORCE Project";
@@ -855,29 +909,48 @@ function resetProjectForm() {
   updateRunAvailability();
 }
 
+async function stopJob() {
+  if (!state.jobId) {
+    showSweetAlert("No Active Run", "There is no active OCR run to stop.", "error");
+    return;
+  }
+  try {
+    await fetchJson(`/api/jobs/${state.jobId}/cancel`, { method: "POST" });
+    setStatus("cancelling");
+    showRunProgress("Stopping Run", "ULTRA FORCE will stop after the current file finishes.");
+    showSweetAlert("Stop Requested", "The current run will stop after the file in progress completes.", "info");
+  } catch (error) {
+    showSweetAlert("Stop Error", error.message, "error");
+  }
+}
+
 async function pollJob() {
   if (!state.jobId) return;
   try {
     const job = await fetchJson(`/api/jobs/${state.jobId}`);
     renderJob(job);
     if (job.status === "queued") {
-      showLoading("OCR Queue", "ULTRA FORCE queued the run and is about to start processing.");
+      showRunProgress("OCR Queue", "ULTRA FORCE queued the run and is about to start processing.");
     } else if (job.status === "running") {
-      showLoading("Processing OCR", "Extracting data and generating output files. This can take a bit on larger folders.");
+      showRunProgress("Processing OCR", "Extracting data and generating output files. This can take a bit on larger folders.");
+    } else if (job.status === "cancelling") {
+      showRunProgress("Stopping Run", "ULTRA FORCE will stop after the current file currently being processed completes.");
     }
-    if (job.status === "completed" || job.status === "failed") {
+    if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") {
       clearInterval(state.pollTimer);
       state.pollTimer = null;
-      hideLoading();
+      state.jobId = null;
+      hideRunProgress();
       if (state.selectedProjectId) {
         await loadDocuments(state.selectedProjectId);
       }
+      updateRunAvailability();
     }
   } catch (error) {
     clearInterval(state.pollTimer);
     state.pollTimer = null;
     setStatus("polling-error");
-    hideLoading();
+    hideRunProgress();
     showSweetAlert("Polling Error", error.message, "error");
   }
 }
@@ -901,7 +974,7 @@ async function runJob() {
     return;
   }
   try {
-    showLoading("Preparing OCR Run", "Submitting the project for extraction.");
+    showRunProgress("Preparing OCR Run", "Submitting the project for extraction.");
     const response = await fetchJson("/api/jobs", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -915,9 +988,10 @@ async function runJob() {
     switchProjectTab("run");
     if (state.pollTimer) clearInterval(state.pollTimer);
     state.pollTimer = setInterval(pollJob, 1500);
+    updateRunAvailability();
     pollJob();
   } catch (error) {
-    hideLoading();
+    hideRunProgress();
     showSweetAlert("Run Error", error.message, "error");
   }
 }
@@ -1134,6 +1208,10 @@ async function logout() {
     clearInterval(state.pollTimer);
     state.pollTimer = null;
   }
+  if (state.modelRefreshTimer) {
+    clearInterval(state.modelRefreshTimer);
+    state.modelRefreshTimer = null;
+  }
   resetProjectForm();
   showAuthView();
   showSweetAlert("Signed Out", "ULTRA FORCE cleared the current session.", "success");
@@ -1216,6 +1294,7 @@ async function init() {
   });
   el("saveProject").addEventListener("click", saveProject);
   el("runJob").addEventListener("click", runJob);
+  el("stopJob").addEventListener("click", stopJob);
   el("projectRunNowButton").addEventListener("click", () => {
     switchProjectTab("run");
   });
@@ -1260,14 +1339,21 @@ async function init() {
     state.historyPage = 1;
     renderHistory(state.documents);
   });
+  el("historyConfidenceFilter").addEventListener("change", (event) => {
+    state.historyConfidenceFilter = event.target.value;
+    state.historyPage = 1;
+    renderHistory(state.documents);
+  });
   el("historyResetFilters").addEventListener("click", () => {
     state.historySearch = "";
     state.historyTypeFilter = "";
     state.historyCompanyFilter = "";
+    state.historyConfidenceFilter = "";
     state.historyPage = 1;
     el("historySearch").value = "";
     el("historyTypeFilter").value = "";
     el("historyCompanyFilter").value = "";
+    el("historyConfidenceFilter").value = "";
     renderHistory(state.documents);
   });
   el("historyPrevPage").addEventListener("click", () => {

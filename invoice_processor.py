@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import importlib.util
 import os
 import re
@@ -36,6 +37,7 @@ class DocumentFields:
 class ProcessedRecord:
     source_file: str
     source_path: str
+    source_hash: str
     output_file: str
     doc_type: str
     date: str
@@ -44,6 +46,8 @@ class ProcessedRecord:
     amount: str
     currency: str
     project_name: str
+    confidence_score: int
+    confidence_label: str
 
 
 DEFAULT_NAMING_PATTERN = (
@@ -95,6 +99,17 @@ def find_model_dir(model_name: str) -> Optional[Path]:
 
 def module_available(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
+
+
+def compute_file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def get_runtime_report(
@@ -1277,6 +1292,40 @@ def extract_fields(text: str) -> DocumentFields:
     )
 
 
+def compute_confidence(fields: DocumentFields) -> tuple[int, str]:
+    score = 0
+
+    if fields.doc_type != "Unknown":
+        score += 20
+    if fields.date != "Unknown" and re.fullmatch(r"\d{4}-\d{2}-\d{2}", fields.date):
+        score += 20
+    if fields.number != "Unknown" and len(fields.number) >= 3:
+        score += 20
+    if fields.company_name != "Unknown" and len(fields.company_name) >= 4:
+        score += 20
+    if fields.amount != "Unknown":
+        try:
+            amount_value = float(fields.amount)
+            if amount_value > 0:
+                score += 20
+        except ValueError:
+            pass
+
+    if fields.company_name == "Unknown" or len(fields.company_name) < 4:
+        score -= 8
+    if fields.number != "Unknown" and re.search(r"[^A-Za-z0-9\-/]", fields.number):
+        score -= 6
+
+    score = max(0, min(100, score))
+    if score >= 80:
+        label = "high"
+    elif score >= 50:
+        label = "medium"
+    else:
+        label = "low"
+    return score, label
+
+
 def refine_fields_with_region_ocr(
     image: np.ndarray,
     fields: DocumentFields,
@@ -1426,6 +1475,7 @@ def write_excel_summary(records: Sequence[ProcessedRecord], output_path: Path) -
     headers = [
         "SourceFile",
         "SourcePath",
+        "SourceHash",
         "OutputFile",
         "Type",
         "Date",
@@ -1434,6 +1484,8 @@ def write_excel_summary(records: Sequence[ProcessedRecord], output_path: Path) -
         "Amount",
         "Currency",
         "ProjectName",
+        "ConfidenceScore",
+        "ConfidenceLabel",
     ]
     sheet.append(headers)
     for record in records:
@@ -1441,6 +1493,7 @@ def write_excel_summary(records: Sequence[ProcessedRecord], output_path: Path) -
             [
                 record.source_file,
                 record.source_path,
+                record.source_hash,
                 record.output_file,
                 record.doc_type,
                 record.date,
@@ -1449,6 +1502,8 @@ def write_excel_summary(records: Sequence[ProcessedRecord], output_path: Path) -
                 record.amount,
                 record.currency,
                 record.project_name,
+                record.confidence_score,
+                record.confidence_label,
             ]
         )
     workbook.save(output_path)
@@ -1500,6 +1555,7 @@ def process_pdf(
     output_paths: List[Path] = []
     records: List[ProcessedRecord] = []
     pages = render_pdf_to_images(pdf_path, dpi=dpi)
+    source_hash = compute_file_sha256(pdf_path)
 
     for page_index, page_image in enumerate(pages, start=1):
         if single_item_per_page:
@@ -1520,6 +1576,7 @@ def process_pdf(
             )
 
             filename = build_output_name(fields, project_name, naming_pattern)
+            confidence_score, confidence_label = compute_confidence(fields)
             output_path = output_dir / filename
 
             duplicate_counter = 1
@@ -1546,6 +1603,7 @@ def process_pdf(
                     ProcessedRecord(
                         source_file=pdf_path.name,
                         source_path=str(pdf_path.resolve()),
+                        source_hash=source_hash,
                         output_file=export_path.name,
                         doc_type=fields.doc_type,
                         date=fields.date,
@@ -1554,6 +1612,8 @@ def process_pdf(
                         amount=fields.amount,
                         currency="AED" if fields.amount != "Unknown" else "Unknown",
                         project_name=project_name,
+                        confidence_score=confidence_score,
+                        confidence_label=confidence_label,
                     )
                 )
             if save_text:
@@ -1593,6 +1653,7 @@ def process_folder(
     log_message: Optional[Any] = None,
     item_complete: Optional[Any] = None,
     should_cancel: Optional[Any] = None,
+    should_skip: Optional[Any] = None,
 ) -> Tuple[List[Path], List[ProcessedRecord]]:
     def emit(message: str) -> None:
         if log_message:
@@ -1618,6 +1679,9 @@ def process_folder(
         if should_cancel and should_cancel():
             emit("Run cancelled before processing next file.")
             break
+        if should_skip and should_skip(pdf_path):
+            emit(f"Skipped duplicate: {pdf_path.name}")
+            continue
         try:
             pdf_outputs, pdf_records = process_pdf(
                 pdf_path=pdf_path,

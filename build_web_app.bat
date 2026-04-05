@@ -7,6 +7,8 @@ set "VENV_DIR=%ROOT_DIR%.venv-web-build"
 set "DIST_DIR=%ROOT_DIR%dist"
 set "APP_DIR=%DIST_DIR%\%APP_NAME%"
 if "%TROCR_MODEL_NAME%"=="" set "TROCR_MODEL_NAME=microsoft/trocr-base-handwritten"
+if "%FAST_RELEASE%"=="" set "FAST_RELEASE=0"
+set "REQ_FINGERPRINT_FILE=%VENV_DIR%\.requirements-fingerprint"
 
 where py >nul 2>nul
 if errorlevel 1 (
@@ -27,31 +29,62 @@ if not exist "%VENV_DIR%" (
 call "%VENV_DIR%\Scripts\activate.bat"
 if errorlevel 1 exit /b 1
 
-python -m pip install --upgrade pip
-python -m pip install -r "%ROOT_DIR%requirements-ai.txt"
-python -m pip install -r "%ROOT_DIR%requirements-web.txt"
-python -m pip install paddlepaddle==3.2.0 PyYAML==6.0.2
-python -m pip install pyinstaller
+for %%I in ("%FAST_RELEASE%") do set "FAST_RELEASE=%%~I"
 
-python -c "from transformers import TrOCRProcessor, VisionEncoderDecoderModel; model=r'%TROCR_MODEL_NAME%'; TrOCRProcessor.from_pretrained(model); VisionEncoderDecoderModel.from_pretrained(model, use_safetensors=True)"
+for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "$content = (Get-Content '%ROOT_DIR%requirements-ai.txt' -Raw) + (Get-Content '%ROOT_DIR%requirements-web.txt' -Raw) + '%TROCR_MODEL_NAME%' + '%FAST_RELEASE%' + 'Windows'; $hash = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($content))).Replace('-', '').ToLower(); Write-Output $hash"`) do set "CURRENT_FINGERPRINT=%%H"
+set "PREVIOUS_FINGERPRINT="
+if exist "%REQ_FINGERPRINT_FILE%" set /p PREVIOUS_FINGERPRINT=<"%REQ_FINGERPRINT_FILE%"
 
-pyinstaller ^
-  --noconfirm ^
-  --clean ^
-  --name "%APP_NAME%" ^
-  --onedir ^
-  --collect-all paddleocr ^
-  --collect-all rapidocr_onnxruntime ^
-  --hidden-import paddleocr ^
-  --hidden-import torch ^
-  --hidden-import transformers ^
-  --hidden-import transformers.models.trocr.processing_trocr ^
-  --hidden-import transformers.models.trocr.modeling_trocr ^
-  --hidden-import transformers.models.vision_encoder_decoder.modeling_vision_encoder_decoder ^
-  --hidden-import tokenizers ^
-  --hidden-import sentencepiece ^
-  --hidden-import safetensors ^
-  "%ROOT_DIR%web_app.py"
+if /I not "%CURRENT_FINGERPRINT%"=="%PREVIOUS_FINGERPRINT%" (
+  python -m pip install --upgrade pip
+  python -m pip install -r "%ROOT_DIR%requirements-ai.txt"
+  python -m pip install -r "%ROOT_DIR%requirements-web.txt"
+  python -m pip install paddlepaddle==3.2.0 PyYAML==6.0.2
+  python -m pip install pyinstaller
+  >"%REQ_FINGERPRINT_FILE%" echo %CURRENT_FINGERPRINT%
+) else (
+  echo Reusing cached build environment
+)
+
+python -c "from pathlib import Path; from transformers import TrOCRProcessor, VisionEncoderDecoderModel; model=r'%TROCR_MODEL_NAME%'; normalized=model.replace('/', '--'); candidate=Path.home()/'.cache'/'huggingface'/'hub'/f'models--{normalized}'; print('Reusing cached TrOCR model' if candidate.exists() else 'Downloading TrOCR model'); TrOCRProcessor.from_pretrained(model); VisionEncoderDecoderModel.from_pretrained(model, use_safetensors=True)"
+
+if /I "%FAST_RELEASE%"=="1" (
+  echo FAST_RELEASE enabled: reusing PyInstaller build cache
+  pyinstaller ^
+    --noconfirm ^
+    --name "%APP_NAME%" ^
+    --onedir ^
+    --collect-all paddleocr ^
+    --collect-all rapidocr_onnxruntime ^
+    --hidden-import paddleocr ^
+    --hidden-import torch ^
+    --hidden-import transformers ^
+    --hidden-import transformers.models.trocr.processing_trocr ^
+    --hidden-import transformers.models.trocr.modeling_trocr ^
+    --hidden-import transformers.models.vision_encoder_decoder.modeling_vision_encoder_decoder ^
+    --hidden-import tokenizers ^
+    --hidden-import sentencepiece ^
+    --hidden-import safetensors ^
+    "%ROOT_DIR%web_app.py"
+) else (
+  pyinstaller ^
+    --noconfirm ^
+    --clean ^
+    --name "%APP_NAME%" ^
+    --onedir ^
+    --collect-all paddleocr ^
+    --collect-all rapidocr_onnxruntime ^
+    --hidden-import paddleocr ^
+    --hidden-import torch ^
+    --hidden-import transformers ^
+    --hidden-import transformers.models.trocr.processing_trocr ^
+    --hidden-import transformers.models.trocr.modeling_trocr ^
+    --hidden-import transformers.models.vision_encoder_decoder.modeling_vision_encoder_decoder ^
+    --hidden-import tokenizers ^
+    --hidden-import sentencepiece ^
+    --hidden-import safetensors ^
+    "%ROOT_DIR%web_app.py"
+)
 
 if exist "%APP_DIR%\web" rmdir /S /Q "%APP_DIR%\web"
 xcopy /E /I /Y "%ROOT_DIR%web" "%APP_DIR%\web\" >nul
