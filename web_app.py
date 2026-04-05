@@ -65,6 +65,8 @@ class AppSettings(BaseModel):
     save_text: bool = True
     use_angle_cls: bool = True
     move_processed_source: bool = False
+    video_sample_seconds: int = 2
+    video_max_frames: int = 120
     excel_name: str = "document_summary.xlsx"
 
 
@@ -148,7 +150,7 @@ def trocr_model_catalog() -> List[Dict[str, str]]:
 
 
 def get_model_status(model_name: str) -> Dict[str, str]:
-    installed = processor.trocr_model_cache_dir(model_name).exists() or processor.bundled_trocr_model_cache_dir(model_name).exists()
+    installed = processor.trocr_model_dir(model_name).exists() or processor.bundled_trocr_model_dir(model_name).exists()
     with MODEL_LOCK:
         download = MODEL_DOWNLOADS.get(model_name, {}).copy()
     status = download.get("status", "installed" if installed else "not_installed")
@@ -158,7 +160,7 @@ def get_model_status(model_name: str) -> Dict[str, str]:
         "installed": "true" if installed else "false",
         "status": status,
         "message": message,
-        "removable": "true" if processor.trocr_model_cache_dir(model_name).exists() else "false",
+        "removable": "true" if processor.trocr_model_dir(model_name).exists() else "false",
     }
 
 
@@ -177,8 +179,12 @@ def download_model_worker(model_name: str) -> None:
         processor.configure_model_cache()
         from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 
-        TrOCRProcessor.from_pretrained(model_name)
-        VisionEncoderDecoderModel.from_pretrained(model_name, use_safetensors=True)
+        target_dir = processor.trocr_model_dir(model_name)
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        trocr_processor = TrOCRProcessor.from_pretrained(model_name)
+        trocr_model = VisionEncoderDecoderModel.from_pretrained(model_name, use_safetensors=True)
+        trocr_processor.save_pretrained(target_dir)
+        trocr_model.save_pretrained(target_dir, safe_serialization=True)
         with MODEL_LOCK:
             MODEL_DOWNLOADS[model_name] = {"status": "installed", "message": "Model installed."}
     except Exception as exc:
@@ -234,6 +240,8 @@ def project_to_payload(project: Project) -> Dict[str, Any]:
             "save_text": project.save_text,
             "use_angle_cls": project.use_angle_cls,
             "move_processed_source": project.move_processed_source,
+            "video_sample_seconds": getattr(project, "video_sample_seconds", 2),
+            "video_max_frames": getattr(project, "video_max_frames", 120),
             "excel_name": project.excel_name,
         },
     }
@@ -317,6 +325,64 @@ def choose_folder_native(prompt: str) -> str:
     raise RuntimeError("No native folder picker is available on this system.")
 
 
+def choose_file_native(prompt: str, extensions: Optional[List[str]] = None) -> str:
+    system = platform.system()
+    extensions = extensions or []
+    if system == "Darwin":
+        type_clause = ""
+        if extensions:
+            joined = ", ".join(f'"{ext}"' for ext in extensions)
+            type_clause = f" of type {{{joined}}}"
+        result = subprocess.run(
+            [
+                "osascript",
+                "-e",
+                f'POSIX path of (choose file with prompt "{prompt}"{type_clause})',
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+    if system == "Windows":
+        filter_text = "All files (*.*)|*.*"
+        if extensions:
+            wildcard = ";".join(f"*.{ext}" for ext in extensions)
+            filter_text = f"Supported files ({wildcard})|{wildcard}|All files (*.*)|*.*"
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$dialog = New-Object System.Windows.Forms.OpenFileDialog; "
+            f'$dialog.Title = "{prompt}"; '
+            f'$dialog.Filter = "{filter_text}"; '
+            "if ($dialog.ShowDialog() -eq 'OK') { $dialog.FileName }"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+    for tool in ("zenity", "kdialog"):
+        if shutil_which(tool):
+            if tool == "zenity":
+                result = subprocess.run(
+                    ["zenity", "--file-selection", "--title", prompt],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return result.stdout.strip()
+            result = subprocess.run(
+                ["kdialog", "--getopenfilename", str(BASE_DIR), "--title", prompt],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return result.stdout.strip()
+    raise RuntimeError("No native file picker is available on this system.")
+
+
 def shutil_which(name: str) -> Optional[str]:
     from shutil import which
 
@@ -340,16 +406,12 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
         )
         processor.configure_model_cache()
 
-        source_dir = Path(request.source_dir).expanduser().resolve()
         output_dir = Path(request.output_dir).expanduser().resolve()
         debug_dir = (
             Path(request.debug_image_dir).expanduser().resolve()
             if request.debug_image_dir
             else None
         )
-
-        if not source_dir.exists():
-            raise FileNotFoundError(f"Source folder does not exist: {source_dir}")
 
         with db_session() as session:
             if job.project_id:
@@ -360,6 +422,9 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
                     .all()
                 }
 
+        source_dir = Path(request.source_dir).expanduser().resolve()
+        if not source_dir.exists():
+            raise FileNotFoundError(f"Source folder does not exist: {source_dir}")
         generated_files, records = processor.process_folder(
             source_dir=source_dir,
             output_dir=output_dir,
@@ -375,19 +440,21 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
             debug_image_dir=debug_dir,
             handwriting_backend=request.handwriting_backend,
             trocr_model=request.trocr_model,
+            video_sample_seconds=request.video_sample_seconds,
+            video_max_frames=request.video_max_frames,
             naming_pattern=request.naming_pattern,
             log_message=lambda message: append_job_log(job, message),
-            item_complete=lambda _pdf_path, output_paths, completed_records: append_job_results(
+            item_complete=lambda _path, output_paths, completed_records: append_job_results(
                 job, output_paths, completed_records
             ),
             should_cancel=lambda: job_should_cancel(job),
-            should_skip=lambda pdf_path: processor.compute_file_sha256(pdf_path) in duplicate_hashes,
+            should_skip=lambda file_path: processor.compute_file_sha256(file_path) in duplicate_hashes,
         )
         processed_source_paths = sorted(
             {
                 Path(record.source_path).expanduser().resolve()
                 for record in records
-                if record.source_path
+                if record.source_path and record.source_type == "pdf"
             }
         )
         if job_should_cancel(job):
@@ -424,6 +491,8 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
                 project.save_text = request.save_text
                 project.use_angle_cls = request.use_angle_cls
                 project.move_processed_source = request.move_processed_source
+                project.video_sample_seconds = request.video_sample_seconds
+                project.video_max_frames = request.video_max_frames
                 project.excel_name = request.excel_name
 
                 existing_records = (
@@ -434,6 +503,9 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
                 existing_by_key = {
                     (
                         record.source_file,
+                        getattr(record, "source_type", "pdf"),
+                        getattr(record, "source_origin", "pdf_upload"),
+                        getattr(record, "source_timestamp", ""),
                         record.doc_type,
                         record.date,
                         record.number,
@@ -447,6 +519,9 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
                 for record, output_file in zip(records, generated_files):
                     record_key = (
                         record.source_file,
+                        record.source_type,
+                        record.source_origin,
+                        record.source_timestamp,
                         record.doc_type,
                         record.date,
                         record.number,
@@ -464,6 +539,9 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
                     db_record.source_file = record.source_file
                     db_record.source_path = record.source_path
                     db_record.source_hash = record.source_hash
+                    db_record.source_type = record.source_type
+                    db_record.source_origin = record.source_origin
+                    db_record.source_timestamp = record.source_timestamp
                     db_record.doc_type = record.doc_type
                     db_record.date = record.date
                     db_record.number = record.number
@@ -472,6 +550,7 @@ def run_job(job: JobState, request: ProcessRequest) -> None:
                     db_record.currency = record.currency
                     db_record.confidence_score = record.confidence_score
                     db_record.confidence_label = record.confidence_label
+                    db_record.raw_text = record.raw_text
                     if output_file.stem.endswith("_enhanced"):
                         db_record.enhanced_output_path = str(output_file)
                     else:
@@ -612,7 +691,7 @@ def delete_model(model_name: str, x_auth_token: str = Header(default="")) -> Dic
     require_user(x_auth_token)
     if model_name not in TROCR_MODELS:
         raise HTTPException(status_code=400, detail="Unsupported model")
-    target_dir = processor.trocr_model_cache_dir(model_name)
+    target_dir = processor.trocr_model_dir(model_name)
     if not target_dir.exists():
         return {"ok": True, "deleted": False}
     shutil.rmtree(target_dir, ignore_errors=True)
@@ -659,6 +738,8 @@ def create_project(project_request: ProjectRequest, x_auth_token: str = Header(d
             save_text=project_request.save_text,
             use_angle_cls=project_request.use_angle_cls,
             move_processed_source=project_request.move_processed_source,
+            video_sample_seconds=project_request.video_sample_seconds,
+            video_max_frames=project_request.video_max_frames,
             excel_name=project_request.excel_name,
         )
         session.add(project)
@@ -701,6 +782,8 @@ def update_project(
         project.save_text = project_request.save_text
         project.use_angle_cls = project_request.use_angle_cls
         project.move_processed_source = project_request.move_processed_source
+        project.video_sample_seconds = project_request.video_sample_seconds
+        project.video_max_frames = project_request.video_max_frames
         project.excel_name = project_request.excel_name
         session.flush()
         session.refresh(project)
@@ -749,7 +832,6 @@ def update_document(
             number=request.number.strip() or "Unknown",
             company_name=request.company_name.strip() or "Unknown",
             amount=request.amount.strip() or "Unknown",
-            currency=request.currency.strip() or "Unknown",
         )
         new_output_name = processor.build_output_name(
             fields,
@@ -782,7 +864,7 @@ def update_document(
         document.number = fields.number
         document.company_name = fields.company_name
         document.amount = fields.amount
-        document.currency = fields.currency
+        document.currency = request.currency.strip() or "Unknown"
         document.confidence_score = confidence_score
         document.confidence_label = confidence_label
         session.flush()
@@ -795,6 +877,9 @@ def update_document(
                 "source_file": document.source_file,
                 "source_path": document.source_path,
                 "source_hash": document.source_hash,
+                "source_type": document.source_type,
+                "source_origin": document.source_origin,
+                "source_timestamp": document.source_timestamp,
                 "output_file": document.output_file,
                 "output_path": document.output_path,
                 "enhanced_output_path": document.enhanced_output_path,
@@ -808,6 +893,7 @@ def update_document(
                 "currency": document.currency,
                 "confidence_score": document.confidence_score,
                 "confidence_label": document.confidence_label,
+                "raw_text": document.raw_text,
             }
         }
 
@@ -838,6 +924,9 @@ def project_documents(project_id: int, x_auth_token: str = Header(default="")) -
                     "source_file": document.source_file,
                     "source_path": document.source_path,
                     "source_hash": document.source_hash,
+                    "source_type": document.source_type,
+                    "source_origin": document.source_origin,
+                    "source_timestamp": document.source_timestamp,
                     "output_file": document.output_file,
                     "output_path": document.output_path,
                     "enhanced_output_path": document.enhanced_output_path,
@@ -851,6 +940,7 @@ def project_documents(project_id: int, x_auth_token: str = Header(default="")) -
                     "currency": document.currency,
                     "confidence_score": document.confidence_score,
                     "confidence_label": document.confidence_label,
+                    "raw_text": document.raw_text,
                 }
             )
         return {"documents": payload}
@@ -891,6 +981,9 @@ def export_project_results(
             "CreatedAt",
             "SourceFile",
             "SourcePath",
+            "SourceType",
+            "SourceOrigin",
+            "SourceTimestamp",
             "OutputFile",
             "OutputPath",
             "EnhancedOutputPath",
@@ -914,6 +1007,9 @@ def export_project_results(
                             document.created_at.isoformat() if document.created_at else "",
                             document.source_file,
                             document.source_path,
+                            document.source_type,
+                            document.source_origin,
+                            document.source_timestamp,
                             document.output_file,
                             document.output_path,
                             document.enhanced_output_path,
@@ -933,6 +1029,10 @@ def export_project_results(
                 processor.ProcessedRecord(
                     source_file=document.source_file,
                     source_path=document.source_path,
+                    source_hash=document.source_hash,
+                    source_type=document.source_type,
+                    source_origin=document.source_origin,
+                    source_timestamp=document.source_timestamp,
                     output_file=document.output_file,
                     doc_type=document.doc_type,
                     date=document.date,
@@ -941,6 +1041,9 @@ def export_project_results(
                     amount=document.amount,
                     currency=document.currency,
                     project_name=project.project_name,
+                    confidence_score=document.confidence_score,
+                    confidence_label=document.confidence_label,
+                    raw_text=document.raw_text,
                 )
                 for document in documents
             ]
@@ -1026,6 +1129,25 @@ def pick_folder(request: PickFolderRequest) -> Dict[str, str]:
     }[request.purpose]
     try:
         path = choose_folder_native(prompt)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"path": path}
+
+
+class PickFileRequest(BaseModel):
+    purpose: Literal["video"] = "video"
+
+
+@app.post("/api/pick-file")
+def pick_file(request: PickFileRequest) -> Dict[str, str]:
+    prompt = {
+        "video": "Choose video file",
+    }[request.purpose]
+    extensions = {
+        "video": ["mp4", "mov", "m4v", "avi"],
+    }[request.purpose]
+    try:
+        path = choose_file_native(prompt, extensions)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"path": path}

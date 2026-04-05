@@ -46,7 +46,7 @@ if /I not "%CURRENT_FINGERPRINT%"=="%PREVIOUS_FINGERPRINT%" (
   echo Reusing cached build environment
 )
 
-python -c "from pathlib import Path; from transformers import TrOCRProcessor, VisionEncoderDecoderModel; model=r'%TROCR_MODEL_NAME%'; normalized=model.replace('/', '--'); candidate=Path.home()/'.cache'/'huggingface'/'hub'/f'models--{normalized}'; print('Reusing cached TrOCR model' if candidate.exists() else 'Downloading TrOCR model'); TrOCRProcessor.from_pretrained(model); VisionEncoderDecoderModel.from_pretrained(model, use_safetensors=True)"
+python -c "from pathlib import Path; from transformers import TrOCRProcessor, VisionEncoderDecoderModel; model=r'%TROCR_MODEL_NAME%'; normalized=model.replace('/', '--'); export_dir=Path(r'%ROOT_DIR%')/'.build-trocr-export'/normalized; export_dir.mkdir(parents=True, exist_ok=True); existing=(export_dir/'config.json').exists() and (export_dir/'model.safetensors').exists(); print('Reusing exported TrOCR model' if existing else 'Exporting TrOCR model'); trocr_processor=TrOCRProcessor.from_pretrained(model); trocr_model=VisionEncoderDecoderModel.from_pretrained(model, use_safetensors=True); trocr_processor.save_pretrained(export_dir); trocr_model.save_pretrained(export_dir, safe_serialization=True)"
 
 if /I "%FAST_RELEASE%"=="1" (
   echo FAST_RELEASE enabled: reusing PyInstaller build cache
@@ -94,9 +94,8 @@ if not exist "%APP_DIR%\processed" mkdir "%APP_DIR%\processed"
 if not exist "%APP_DIR%\debug_images" mkdir "%APP_DIR%\debug_images"
 if exist "%ROOT_DIR%models" xcopy /E /I /Y "%ROOT_DIR%models" "%APP_DIR%\models\" >nul
 if exist "%USERPROFILE%\.paddlex\official_models" xcopy /E /I /Y "%USERPROFILE%\.paddlex\official_models" "%APP_DIR%\models\official_models\" >nul
-set "HF_MODEL_DIR=%USERPROFILE%\.cache\huggingface\hub\models--microsoft--trocr-base-handwritten"
-if /I not "%TROCR_MODEL_NAME%"=="microsoft/trocr-base-handwritten" set "HF_MODEL_DIR=%USERPROFILE%\.cache\huggingface\hub\models--%TROCR_MODEL_NAME:/=--%"
-if exist "%HF_MODEL_DIR%" xcopy /E /I /Y "%HF_MODEL_DIR%" "%APP_DIR%\models\huggingface\hub\models--%TROCR_MODEL_NAME:/=--%\" >nul
+set "TROCR_EXPORT_DIR=%ROOT_DIR%.build-trocr-export\%TROCR_MODEL_NAME:/=--%"
+if exist "%TROCR_EXPORT_DIR%" xcopy /E /I /Y "%TROCR_EXPORT_DIR%" "%APP_DIR%\models\trocr\%TROCR_MODEL_NAME:/=--%\" >nul
 
 echo Build completed: %APP_DIR%
 endlocal

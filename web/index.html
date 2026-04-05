@@ -303,13 +303,17 @@
               <div class="mt-6 grid gap-5">
                 <section class="rounded-2xl border border-[rgba(70,43,24,0.12)] bg-[#fff7ef] p-5">
                   <div class="mb-4">
-                    <h3 class="text-lg font-semibold">Folders</h3>
+                    <h3 class="text-lg font-semibold">Sources</h3>
                   </div>
                   <div class="grid gap-4 md:grid-cols-2">
                     <label class="grid gap-2">
+                      <span class="text-sm font-semibold text-muted">Project Name</span>
+                      <input id="projectName" class="rounded-2xl border border-[rgba(77,49,29,0.15)] bg-[#fffaf1] px-4 py-3" type="text" />
+                    </label>
+                    <label class="grid gap-2">
                       <span class="text-sm font-semibold text-muted">Source Folder</span>
                       <div class="grid grid-cols-[1fr_auto] gap-2">
-                        <input id="sourceDir" class="rounded-2xl border border-[rgba(77,49,29,0.15)] bg-[#fffaf1] px-4 py-3" type="text" placeholder="/path/to/source" />
+                        <input id="sourceDir" class="rounded-2xl border border-[rgba(77,49,29,0.15)] bg-[#fffaf1] px-4 py-3" type="text" placeholder="/path/to/source-folder-with-pdf-video-excel" />
                         <button data-pick="source" class="rounded-full bg-[rgba(165,78,45,0.1)] px-4 py-3 font-semibold text-emberdark">Choose</button>
                       </div>
                     </label>
@@ -335,8 +339,12 @@
                       </div>
                     </label>
                     <label class="grid gap-2">
-                      <span class="text-sm font-semibold text-muted">Project Name</span>
-                      <input id="projectName" class="rounded-2xl border border-[rgba(77,49,29,0.15)] bg-[#fffaf1] px-4 py-3" type="text" />
+                      <span class="text-sm font-semibold text-muted">Video Sample Every N Seconds</span>
+                      <input id="videoSampleSeconds" class="rounded-2xl border border-[rgba(77,49,29,0.15)] bg-[#fffaf1] px-4 py-3" type="number" min="1" step="1" />
+                    </label>
+                    <label class="grid gap-2">
+                      <span class="text-sm font-semibold text-muted">Video Max Sampled Frames</span>
+                      <input id="videoMaxFrames" class="rounded-2xl border border-[rgba(77,49,29,0.15)] bg-[#fffaf1] px-4 py-3" type="number" min="1" step="1" />
                     </label>
                   </div>
                 </section>
@@ -489,6 +497,8 @@
                   <table class="w-full border-collapse" id="resultsTable">
                     <thead>
                       <tr class="bg-[#fff3e6] text-left text-sm text-muted">
+                        <th class="px-4 py-3 font-semibold">Kind</th>
+                        <th class="px-4 py-3 font-semibold">At</th>
                         <th class="px-4 py-3 font-semibold">Output</th>
                         <th class="px-4 py-3 font-semibold">Type</th>
                         <th class="px-4 py-3 font-semibold">Date</th>
@@ -553,7 +563,10 @@
                       <tr class="bg-[#fff3e6] text-left text-sm text-muted">
                         <th class="px-4 py-3 font-semibold"><input id="historySelectAll" type="checkbox" class="h-4 w-4" /></th>
                         <th class="px-4 py-3 font-semibold">Created</th>
-                        <th class="px-4 py-3 font-semibold">Source</th>
+                        <th class="px-4 py-3 font-semibold">Kind</th>
+                        <th class="px-4 py-3 font-semibold">Origin</th>
+                        <th class="px-4 py-3 font-semibold">At</th>
+                        <th class="px-4 py-3 font-semibold">Original</th>
                         <th class="px-4 py-3 font-semibold">Output</th>
                         <th class="px-4 py-3 font-semibold">Type</th>
                         <th class="px-4 py-3 font-semibold">Date</th>
@@ -591,7 +604,9 @@
                   <table id="documentsTable" class="w-full border-collapse">
                     <thead>
                       <tr class="bg-[#fff3e6] text-left text-sm text-muted">
-                        <th class="px-4 py-3 font-semibold">Source PDF</th>
+                        <th class="px-4 py-3 font-semibold">Kind</th>
+                        <th class="px-4 py-3 font-semibold">At</th>
+                        <th class="px-4 py-3 font-semibold">Original</th>
                         <th class="px-4 py-3 font-semibold">Output PDF</th>
                         <th class="px-4 py-3 font-semibold">Enhanced PDF</th>
                         <th class="px-4 py-3 font-semibold">Original Image</th>

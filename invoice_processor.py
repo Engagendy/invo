@@ -1,4 +1,5 @@
 import argparse
+import csv
 import hashlib
 import importlib.util
 import os
@@ -14,8 +15,8 @@ from typing import Any, Iterable, List, Optional, Sequence, Tuple
 import cv2
 import fitz
 import numpy as np
-from openpyxl import Workbook
-from PIL import Image
+from openpyxl import Workbook, load_workbook
+from PIL import Image, ImageDraw, ImageFont
 import pytesseract
 
 from app_paths import bundled_models_dir, runtime_root, user_data_root
@@ -38,6 +39,9 @@ class ProcessedRecord:
     source_file: str
     source_path: str
     source_hash: str
+    source_type: str
+    source_origin: str
+    source_timestamp: str
     output_file: str
     doc_type: str
     date: str
@@ -48,6 +52,7 @@ class ProcessedRecord:
     project_name: str
     confidence_score: int
     confidence_label: str
+    raw_text: str
 
 
 DEFAULT_NAMING_PATTERN = (
@@ -71,6 +76,18 @@ def trocr_cache_root() -> Path:
     return user_data_root() / "models" / "huggingface"
 
 
+def trocr_models_root() -> Path:
+    return user_data_root() / "models" / "trocr"
+
+
+def trocr_model_dir(model_name: str) -> Path:
+    return trocr_models_root() / model_name.replace("/", "--")
+
+
+def bundled_trocr_model_dir(model_name: str) -> Path:
+    return bundled_models_dir() / "trocr" / model_name.replace("/", "--")
+
+
 def trocr_model_cache_dir(model_name: str) -> Path:
     return trocr_cache_root() / "hub" / f"models--{model_name.replace('/', '--')}"
 
@@ -80,6 +97,15 @@ def bundled_trocr_model_cache_dir(model_name: str) -> Path:
 
 
 def ensure_trocr_model_available(model_name: str) -> None:
+    target_model_dir = trocr_model_dir(model_name)
+    if target_model_dir.exists():
+        return
+    bundled_model_dir = bundled_trocr_model_dir(model_name)
+    if bundled_model_dir.exists():
+        target_model_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(bundled_model_dir, target_model_dir, dirs_exist_ok=True)
+        return
+
     target_dir = trocr_model_cache_dir(model_name)
     if target_dir.exists():
         return
@@ -87,6 +113,16 @@ def ensure_trocr_model_available(model_name: str) -> None:
     if bundled_dir.exists():
         target_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(bundled_dir, target_dir, dirs_exist_ok=True)
+
+
+def resolve_trocr_model_source(model_name: str) -> str:
+    local_dir = trocr_model_dir(model_name)
+    if local_dir.exists():
+        return str(local_dir)
+    bundled_dir = bundled_trocr_model_dir(model_name)
+    if bundled_dir.exists():
+        return str(bundled_dir)
+    return model_name
 
 
 def find_model_dir(model_name: str) -> Optional[Path]:
@@ -754,9 +790,10 @@ def make_trocr_engine(model_name: str = "microsoft/trocr-base-handwritten") -> A
 
     ensure_trocr_model_available(model_name)
     configure_model_cache()
-    processor = TrOCRProcessor.from_pretrained(model_name)
+    model_source = resolve_trocr_model_source(model_name)
+    processor = TrOCRProcessor.from_pretrained(model_source)
     model = VisionEncoderDecoderModel.from_pretrained(
-        model_name,
+        model_source,
         use_safetensors=True,
     )
     model.to(device)
@@ -1476,6 +1513,9 @@ def write_excel_summary(records: Sequence[ProcessedRecord], output_path: Path) -
         "SourceFile",
         "SourcePath",
         "SourceHash",
+        "SourceType",
+        "SourceOrigin",
+        "SourceTimestamp",
         "OutputFile",
         "Type",
         "Date",
@@ -1486,6 +1526,7 @@ def write_excel_summary(records: Sequence[ProcessedRecord], output_path: Path) -
         "ProjectName",
         "ConfidenceScore",
         "ConfidenceLabel",
+        "RawText",
     ]
     sheet.append(headers)
     for record in records:
@@ -1494,6 +1535,9 @@ def write_excel_summary(records: Sequence[ProcessedRecord], output_path: Path) -
                 record.source_file,
                 record.source_path,
                 record.source_hash,
+                record.source_type,
+                record.source_origin,
+                record.source_timestamp,
                 record.output_file,
                 record.doc_type,
                 record.date,
@@ -1504,6 +1548,7 @@ def write_excel_summary(records: Sequence[ProcessedRecord], output_path: Path) -
                 record.project_name,
                 record.confidence_score,
                 record.confidence_label,
+                record.raw_text,
             ]
         )
     workbook.save(output_path)
@@ -1536,6 +1581,620 @@ def ensure_bgr(image: np.ndarray) -> np.ndarray:
 
 def iter_pdf_files(source_dir: Path) -> Iterable[Path]:
     yield from sorted(path for path in source_dir.glob("*.pdf") if path.is_file())
+
+
+def iter_source_files(source_dir: Path) -> Iterable[Path]:
+    supported = {".pdf", ".mp4", ".mov", ".m4v", ".avi", ".xlsx", ".xlsm", ".csv"}
+    yield from sorted(
+        path for path in source_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in supported
+    )
+
+
+def detect_source_file_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix in {".mp4", ".mov", ".m4v", ".avi"}:
+        return "video"
+    if suffix in {".xlsx", ".xlsm", ".csv"}:
+        return "sheet"
+    return "unknown"
+
+
+def format_seconds_timestamp(seconds: float) -> str:
+    total_millis = max(0, int(round(seconds * 1000)))
+    hours, remainder = divmod(total_millis, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    secs, millis = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
+def infer_source_origin(source_path: Path, source_type: str) -> str:
+    name = source_path.name.lower()
+    if source_type == "video":
+        if "tabby" in name:
+            return "tabby_video"
+        if "amazon" in name:
+            return "amazon_video"
+        if "whatsapp" in name:
+            return "whatsapp_video"
+        return "video_upload"
+    return "pdf_upload"
+
+
+VIDEO_DATE_LINE_RE = re.compile(
+    r"(?i)\b(\d{1,2})\s*"
+    r"(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|"
+    r"sep|sept|september|oct|october|nov|november|dec|december)"
+    r"(?:\s+(\d{4}))?\b"
+)
+VIDEO_FILTER_TERMS = {
+    "allproducts",
+    "date",
+    "history",
+    "products",
+}
+VIDEO_META_TERMS = {
+    "petrolstations",
+    "groceries",
+    "dining",
+    "governmentpayments",
+    "financialservices",
+    "other",
+    "clothingshoes",
+    "clothingandshoes",
+    "payment",
+    "tabbycard",
+    "cardrepayment",
+}
+
+
+def video_content_bounds(image: np.ndarray) -> BoundingBox:
+    height, width = image.shape[:2]
+    x1 = int(width * 0.05)
+    y1 = int(height * 0.18)
+    x2 = int(width * 0.97)
+    y2 = int(height * 0.93)
+    return x1, y1, max(1, x2 - x1), max(1, y2 - y1)
+
+
+def frame_signature(image: np.ndarray) -> str:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    tiny = cv2.resize(gray, (16, 16), interpolation=cv2.INTER_AREA)
+    mean_value = float(np.mean(tiny))
+    bits = ["1" if value >= mean_value else "0" for value in tiny.flatten()]
+    return "".join(bits)
+
+
+def signature_distance(left: str, right: str) -> int:
+    return sum(1 for a, b in zip(left, right) if a != b)
+
+
+def detect_video_record_regions(image: np.ndarray) -> List[BoundingBox]:
+    height, width = image.shape[:2]
+    x, y, w, h = video_content_bounds(image)
+    if w <= 1 or h <= 1:
+        return [(0, 0, width, height)]
+
+    region = image[y:y + h, x:x + w]
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+    non_white = ((gray < 245) | ((hsv[:, :, 1] > 18) & (hsv[:, :, 2] < 250))).astype(np.uint8) * 255
+    non_white = cv2.morphologyEx(
+        non_white,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (21, 3)),
+    )
+    non_white = cv2.morphologyEx(
+        non_white,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+    )
+    projection = np.sum(non_white > 0, axis=1)
+    threshold = max(8, int(w * 0.02))
+
+    boxes: List[BoundingBox] = []
+    start: Optional[int] = None
+    quiet_rows = 0
+    max_band_height = int(height * 0.16)
+    min_band_height = int(height * 0.022)
+
+    for index, value in enumerate(projection):
+        if value > threshold:
+            if start is None:
+                start = index
+            quiet_rows = 0
+        elif start is not None:
+            quiet_rows += 1
+            if quiet_rows > 6:
+                end = index - quiet_rows + 1
+                band_height = end - start
+                if min_band_height <= band_height <= max_band_height:
+                    boxes.append((x, y + start, w, band_height))
+                start = None
+                quiet_rows = 0
+
+    if start is not None:
+        end = len(projection)
+        band_height = end - start
+        if min_band_height <= band_height <= max_band_height:
+            boxes.append((x, y + start, w, band_height))
+
+    merged = merge_boxes(boxes, gap=8)
+    filtered = [
+        box for box in merged
+        if min_band_height <= box[3] <= max_band_height
+    ]
+    if filtered:
+        return filtered[:14]
+
+    estimated_height = max(52, int(height * 0.08))
+    estimated_gap = max(8, int(height * 0.012))
+    fallback: List[BoundingBox] = []
+    cursor = y
+    while cursor + estimated_height <= y + h and len(fallback) < 8:
+        fallback.append((x, cursor, w, estimated_height))
+        cursor += estimated_height + estimated_gap
+    return fallback or [(x, y, w, min(h, estimated_height))]
+
+
+def parse_video_date_header(text: str) -> str:
+    normalized = normalize_ocr_text(text)
+    for line in text_lines(normalized):
+        match = VIDEO_DATE_LINE_RE.search(line)
+        if not match:
+            continue
+        day = match.group(1)
+        month = match.group(2)
+        year = match.group(3) or str(datetime.now().year)
+        for fmt in ("%d %B %Y", "%d %b %Y"):
+            try:
+                return datetime.strptime(f"{day} {month} {year}", fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+    return "Unknown"
+
+
+def is_video_filter_text(text: str) -> bool:
+    joined = canonical_letters(text)
+    if not joined:
+        return False
+    return any(term in joined for term in VIDEO_FILTER_TERMS)
+
+
+def clean_video_company_name(text: str) -> str:
+    candidates: List[str] = []
+    for line in text_lines(normalize_ocr_text(text)):
+        canonical = canonical_letters(line)
+        if not canonical or canonical in VIDEO_FILTER_TERMS:
+            continue
+        if canonical in VIDEO_META_TERMS:
+            continue
+        if VIDEO_DATE_LINE_RE.search(line):
+            continue
+        if re.search(r"(?i)\bpayment\s+\d+\s+of\s+\d+\b", line):
+            continue
+        if re.search(r"(?i)\b(?:history|all\s+products|date)\b", line):
+            continue
+        cleaned = re.sub(r"\s{2,}", " ", line).strip(" -:")
+        if len(cleaned) < 3:
+            continue
+        candidates.append(cleaned)
+    return candidates[0][:120] if candidates else "Unknown"
+
+
+def parse_video_amount(text: str) -> str:
+    normalized = normalize_ocr_text(text).replace(",", "")
+    matches = re.findall(r"(?i)[+\-]?\s*[ÐAED]*\s*(\d{1,6}\.\d{2})", normalized)
+    if not matches:
+        return "Unknown"
+    try:
+        return f"{float(matches[0]):.2f}"
+    except ValueError:
+        return "Unknown"
+
+
+def parse_video_reference(text: str) -> str:
+    normalized = normalize_ocr_text(text)
+    payment_match = re.search(r"(?i)\bpayment\s+(\d+\s+of\s+\d+)\b", normalized)
+    if payment_match:
+        return payment_match.group(1).replace(" ", "")
+    card_match = re.search(r"(?i)\b(?:tabby\s+card|card\s+repayment)\b.*?([*•\.]{2,}\s*\d{4})", normalized)
+    if card_match:
+        digits = re.sub(r"\D", "", card_match.group(1))
+        if digits:
+            return f"card-{digits}"
+    return "Unknown"
+
+
+def detect_video_date_anchors(
+    image: np.ndarray,
+    ocr_backend: str,
+    ocr_engines: Sequence[Any],
+) -> List[Tuple[int, str]]:
+    x, y, w, h = video_content_bounds(image)
+    left_width = max(1, int(w * 0.56))
+    stripe_height = max(70, int(image.shape[0] * 0.08))
+    step = max(36, int(image.shape[0] * 0.055))
+    anchors: List[Tuple[int, str]] = []
+
+    cursor = y
+    while cursor + stripe_height <= y + h:
+        stripe = image[cursor:cursor + stripe_height, x:x + left_width]
+        text, _ = extract_text_by_backend(stripe, ocr_backend, ocr_engines)
+        parsed = parse_video_date_header(text)
+        if parsed != "Unknown":
+            center_y = cursor + stripe_height // 2
+            if not anchors or anchors[-1][1] != parsed or abs(anchors[-1][0] - center_y) > step:
+                anchors.append((center_y, parsed))
+        cursor += step
+    return anchors
+
+
+def extract_video_row_fields(
+    full_text: str,
+    left_text: str,
+    right_text: str,
+    current_date: str,
+) -> DocumentFields:
+    combined = normalize_ocr_text("\n".join(part for part in [full_text, left_text, right_text] if part.strip()))
+    company_name = clean_video_company_name(left_text)
+    if company_name == "Unknown":
+        company_name = clean_video_company_name(combined)
+    amount = parse_video_amount(right_text)
+    if amount == "Unknown":
+        amount = parse_video_amount(combined)
+    number = parse_video_reference(combined)
+    return DocumentFields(
+        doc_type="Purchase" if company_name != "Unknown" or amount != "Unknown" else "Unknown",
+        date=current_date,
+        number=number,
+        company_name=company_name,
+        amount=amount,
+    )
+
+
+def process_video(
+    video_path: Path,
+    output_dir: Path,
+    project_name: str,
+    ocr_engines: Sequence[Any],
+    ocr_backend: str,
+    sample_seconds: int = 2,
+    max_frames: int = 120,
+    debug_image_dir: Optional[Path] = None,
+    trocr_engine: Any = None,
+    naming_pattern: str = DEFAULT_NAMING_PATTERN,
+    log_message: Optional[Any] = None,
+    item_complete: Optional[Any] = None,
+    should_cancel: Optional[Any] = None,
+) -> Tuple[List[Path], List[ProcessedRecord]]:
+    def emit(message: str) -> None:
+        if log_message:
+            log_message(message)
+        else:
+            print(message)
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"Unable to open video: {video_path}")
+
+    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    duration = frame_count / fps if frame_count > 0 and fps > 0 else 0
+    source_hash = compute_file_sha256(video_path)
+    source_origin = infer_source_origin(video_path, "video")
+
+    step_frames = max(1, int(round(max(sample_seconds, 1) * fps)))
+    if frame_count > 0 and max_frames > 0:
+        step_frames = max(step_frames, max(1, frame_count // max_frames))
+
+    generated_files: List[Path] = []
+    records: List[ProcessedRecord] = []
+    previous_signature = ""
+    seen_record_keys: set[Tuple[str, str, str, str, str]] = set()
+    current_date = "Unknown"
+
+    frame_index = 0
+    sampled_index = 0
+    while True:
+        if should_cancel and should_cancel():
+            emit("Run cancelled before processing next video frame.")
+            break
+        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            break
+
+        sampled_index += 1
+        emit(f"Sampled frame {sampled_index} at {format_seconds_timestamp(frame_index / fps if fps > 0 else 0.0)}")
+        content_signature = frame_signature(crop_with_padding(frame, video_content_bounds(frame), padding=0))
+        if previous_signature and signature_distance(previous_signature, content_signature) < 20:
+            frame_index += step_frames
+            continue
+        previous_signature = content_signature
+
+        timestamp_seconds = frame_index / fps if fps > 0 else 0.0
+        timestamp_label = format_seconds_timestamp(timestamp_seconds)
+        regions = detect_video_record_regions(frame)
+        date_anchors = detect_video_date_anchors(frame, ocr_backend, ocr_engines)
+
+        for region_index, box in enumerate(regions, start=1):
+            crop = crop_with_padding(frame, box, padding=10)
+            text, enhanced_image = extract_text_by_backend(crop, ocr_backend, ocr_engines)
+            normalized_text = normalize_ocr_text(text)
+            if len(normalized_text.strip()) < 8:
+                continue
+
+            if is_video_filter_text(normalized_text):
+                continue
+
+            header_date = parse_video_date_header(normalized_text)
+            if header_date != "Unknown" and parse_video_amount(normalized_text) == "Unknown":
+                current_date = header_date
+                emit(f"Detected video date header: {current_date}")
+                continue
+            inherited_date = current_date
+            region_center = box[1] + (box[3] // 2)
+            for anchor_y, anchor_date in date_anchors:
+                if anchor_y <= region_center:
+                    inherited_date = anchor_date
+
+            left_crop = crop_relative(crop, 0.14, 0.0, 0.69, 1.0)
+            right_crop = crop_relative(crop, 0.68, 0.0, 0.99, 1.0)
+            left_text, _ = extract_text_by_backend(left_crop, ocr_backend, ocr_engines)
+            right_text, _ = extract_text_by_backend(right_crop, ocr_backend, ocr_engines)
+            fields = extract_video_row_fields(
+                full_text=normalized_text,
+                left_text=left_text,
+                right_text=right_text,
+                current_date=header_date if header_date != "Unknown" else inherited_date,
+            )
+            if header_date != "Unknown":
+                current_date = header_date
+
+            if fields.company_name == "Unknown" or fields.amount == "Unknown":
+                continue
+            record_key = (
+                fields.doc_type,
+                fields.date,
+                fields.number,
+                fields.company_name,
+                fields.amount,
+            )
+            if record_key in seen_record_keys:
+                continue
+            seen_record_keys.add(record_key)
+
+            filename = build_output_name(fields, project_name, naming_pattern)
+            confidence_score, confidence_label = compute_confidence(fields)
+            output_path = output_dir / filename
+
+            duplicate_counter = 1
+            while output_path.exists():
+                output_path = output_dir / (
+                    filename[:-4] + f"_t{timestamp_label.replace(':', '').replace('.', '')}_{region_index}_{duplicate_counter}.pdf"
+                )
+                duplicate_counter += 1
+
+            image_to_pdf(crop, output_path)
+            generated_files.append(output_path)
+            records.append(
+                ProcessedRecord(
+                    source_file=video_path.name,
+                    source_path=str(video_path.resolve()),
+                    source_hash=source_hash,
+                    source_type="video",
+                    source_origin=source_origin,
+                    source_timestamp=timestamp_label,
+                    output_file=output_path.name,
+                    doc_type=fields.doc_type,
+                    date=fields.date,
+                    number=fields.number,
+                    company_name=fields.company_name,
+                    amount=fields.amount,
+                    currency="AED" if fields.amount != "Unknown" else "Unknown",
+                    project_name=project_name,
+                    confidence_score=confidence_score,
+                    confidence_label=confidence_label,
+                    raw_text=normalize_ocr_text(
+                        "\n".join([normalized_text, normalize_ocr_text(left_text), normalize_ocr_text(right_text)])
+                    ),
+                )
+            )
+            if item_complete:
+                item_complete(video_path, [output_path], [records[-1]])
+            emit(
+                f"Extracted video record at {timestamp_label}: "
+                f"{fields.company_name} {fields.amount}"
+            )
+
+            if debug_image_dir is not None:
+                debug_image_dir.mkdir(parents=True, exist_ok=True)
+                debug_base = f"{video_path.stem}_t{timestamp_label.replace(':', '-').replace('.', '-')}_r{region_index}"
+                image_to_png(crop, debug_image_dir / f"{debug_base}_original.png")
+                image_to_png(ensure_bgr(enhanced_image), debug_image_dir / f"{debug_base}_enhanced.png")
+
+        frame_index += step_frames
+        if max_frames > 0 and sampled_index >= max_frames:
+            break
+
+    capture.release()
+    return generated_files, records
+
+
+def parse_sheet_date(value: Any) -> str:
+    if value is None:
+        return "Unknown"
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+    text = normalize_ocr_text(str(value))
+    return parse_date(text)
+
+
+def parse_sheet_amount(row: dict[str, Any]) -> str:
+    def numeric(value: Any) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        cleaned = str(value).replace(",", "").strip()
+        cleaned = cleaned.replace("AED", "").replace("aed", "").strip()
+        try:
+            return abs(float(cleaned))
+        except ValueError:
+            return None
+
+    for key in ("amount", "transaction_amount"):
+        value = numeric(row.get(key))
+        if value is not None and value > 0:
+            return f"{value:.2f}"
+    for key in ("debit", "withdrawal", "dr"):
+        value = numeric(row.get(key))
+        if value is not None and value > 0:
+            return f"{value:.2f}"
+    for key in ("credit", "deposit", "cr"):
+        value = numeric(row.get(key))
+        if value is not None and value > 0:
+            return f"{value:.2f}"
+    return "Unknown"
+
+
+def normalize_sheet_headers(values: Sequence[Any]) -> dict[int, str]:
+    mappings = {
+        "date": {"date", "transaction date", "value date", "posting date"},
+        "description": {"description", "details", "merchant", "narration", "transaction", "remarks"},
+        "reference": {"reference", "ref", "transaction id", "transaction no", "order id", "reference no"},
+        "amount": {"amount", "transaction amount"},
+        "debit": {"debit", "withdrawal", "dr"},
+        "credit": {"credit", "deposit", "cr"},
+        "currency": {"currency", "curr"},
+    }
+    header_map: dict[int, str] = {}
+    for index, value in enumerate(values):
+        text = normalize_whitespace(str(value or "")).lower()
+        for normalized, aliases in mappings.items():
+            if text in aliases:
+                header_map[index] = normalized
+                break
+    return header_map
+
+
+def create_summary_pdf(lines: Sequence[str], output_path: Path, width: int = 1240) -> None:
+    font = ImageFont.load_default()
+    padding = 40
+    line_height = 26
+    usable_lines = [line[:140] for line in lines if line][:30]
+    height = max(400, padding * 2 + line_height * (len(usable_lines) + 2))
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((padding, padding), "ULTRA FORCE Extracted Record", fill="black", font=font)
+    cursor_y = padding + 46
+    for line in usable_lines:
+        draw.text((padding, cursor_y), line, fill="black", font=font)
+        cursor_y += line_height
+    image_to_pdf(cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR), output_path)
+
+
+def process_sheet(
+    sheet_path: Path,
+    output_dir: Path,
+    project_name: str,
+    naming_pattern: str = DEFAULT_NAMING_PATTERN,
+    log_message: Optional[Any] = None,
+    item_complete: Optional[Any] = None,
+) -> Tuple[List[Path], List[ProcessedRecord]]:
+    def emit(message: str) -> None:
+        if log_message:
+            log_message(message)
+        else:
+            print(message)
+
+    source_hash = compute_file_sha256(sheet_path)
+    source_origin = "csv_import" if sheet_path.suffix.lower() == ".csv" else "excel_import"
+    rows: List[List[Any]] = []
+    if sheet_path.suffix.lower() == ".csv":
+        with sheet_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.reader(handle))
+    else:
+        workbook = load_workbook(sheet_path, data_only=True, read_only=True)
+        worksheet = workbook.active
+        rows = [list(row) for row in worksheet.iter_rows(values_only=True)]
+
+    header_index = None
+    header_map: dict[int, str] = {}
+    for index, row in enumerate(rows[:15]):
+        current_map = normalize_sheet_headers(row)
+        if "date" in current_map.values() and ("description" in current_map.values() or "amount" in current_map.values()):
+            header_index = index
+            header_map = current_map
+            break
+    if header_index is None:
+        emit(f"Skipped sheet: {sheet_path.name} -> no recognizable header row")
+        return [], []
+
+    generated_files: List[Path] = []
+    records: List[ProcessedRecord] = []
+    for row_index, values in enumerate(rows[header_index + 1 :], start=1):
+        row_data = {normalized: values[column_index] if column_index < len(values) else "" for column_index, normalized in header_map.items()}
+        raw_text = " | ".join(normalize_whitespace(str(value or "")) for value in values if value not in (None, ""))
+        if not raw_text.strip():
+            continue
+        fields = DocumentFields(
+            doc_type="BankTransaction",
+            date=parse_sheet_date(row_data.get("date")),
+            number=normalize_whitespace(str(row_data.get("reference") or "")) or "Unknown",
+            company_name=normalize_whitespace(str(row_data.get("description") or ""))[:120] or "Unknown",
+            amount=parse_sheet_amount(row_data),
+        )
+        confidence_score, confidence_label = compute_confidence(fields)
+        filename = build_output_name(fields, project_name, naming_pattern)
+        output_path = output_dir / filename
+        duplicate_counter = 1
+        while output_path.exists():
+            output_path = output_dir / (
+                filename[:-4] + f"_row{row_index}_{duplicate_counter}.pdf"
+            )
+            duplicate_counter += 1
+
+        create_summary_pdf(
+            [
+                f"Source: {sheet_path.name}",
+                f"Row: {row_index}",
+                f"Type: {fields.doc_type}",
+                f"Date: {fields.date}",
+                f"Reference: {fields.number}",
+                f"Company: {fields.company_name}",
+                f"Amount: {fields.amount}",
+                f"Raw: {raw_text}",
+            ],
+            output_path,
+        )
+        generated_files.append(output_path)
+        record = ProcessedRecord(
+            source_file=sheet_path.name,
+            source_path=str(sheet_path.resolve()),
+            source_hash=source_hash,
+            source_type="sheet",
+            source_origin=source_origin,
+            source_timestamp=f"row:{row_index}",
+            output_file=output_path.name,
+            doc_type=fields.doc_type,
+            date=fields.date,
+            number=fields.number,
+            company_name=fields.company_name,
+            amount=fields.amount,
+            currency=normalize_whitespace(str(row_data.get("currency") or "")) or ("AED" if fields.amount != "Unknown" else "Unknown"),
+            project_name=project_name,
+            confidence_score=confidence_score,
+            confidence_label=confidence_label,
+            raw_text=raw_text,
+        )
+        records.append(record)
+        if item_complete:
+            item_complete(sheet_path, [output_path], [record])
+
+    emit(f"Processed sheet: {sheet_path.name}")
+    return generated_files, records
 
 
 def process_pdf(
@@ -1604,6 +2263,9 @@ def process_pdf(
                         source_file=pdf_path.name,
                         source_path=str(pdf_path.resolve()),
                         source_hash=source_hash,
+                        source_type="pdf",
+                        source_origin="pdf_upload",
+                        source_timestamp="",
                         output_file=export_path.name,
                         doc_type=fields.doc_type,
                         date=fields.date,
@@ -1614,6 +2276,7 @@ def process_pdf(
                         project_name=project_name,
                         confidence_score=confidence_score,
                         confidence_label=confidence_label,
+                        raw_text=text,
                     )
                 )
             if save_text:
@@ -1649,6 +2312,8 @@ def process_folder(
     debug_image_dir: Optional[Path] = None,
     handwriting_backend: str = "none",
     trocr_model: str = "microsoft/trocr-base-handwritten",
+    video_sample_seconds: int = 2,
+    video_max_frames: int = 120,
     naming_pattern: str = DEFAULT_NAMING_PATTERN,
     log_message: Optional[Any] = None,
     item_complete: Optional[Any] = None,
@@ -1675,20 +2340,22 @@ def process_folder(
     generated_files: List[Path] = []
     records: List[ProcessedRecord] = []
 
-    for pdf_path in iter_pdf_files(source_dir):
+    for source_path in iter_source_files(source_dir):
         if should_cancel and should_cancel():
             emit("Run cancelled before processing next file.")
             break
-        if should_skip and should_skip(pdf_path):
-            emit(f"Skipped duplicate: {pdf_path.name}")
+        if should_skip and should_skip(source_path):
+            emit(f"Skipped duplicate: {source_path.name}")
             continue
         try:
-            pdf_outputs, pdf_records = process_pdf(
-                pdf_path=pdf_path,
-                output_dir=output_dir,
-                project_name=project_name,
-                ocr_engines=ocr_engines,
-                ocr_backend=ocr_backend,
+            source_type = detect_source_file_type(source_path)
+            if source_type == "pdf":
+                file_outputs, file_records = process_pdf(
+                    pdf_path=source_path,
+                    output_dir=output_dir,
+                    project_name=project_name,
+                    ocr_engines=ocr_engines,
+                    ocr_backend=ocr_backend,
                     dpi=dpi,
                     save_text=save_text,
                     single_item_per_page=single_item_per_page,
@@ -1697,13 +2364,42 @@ def process_folder(
                     trocr_engine=trocr_engine,
                     naming_pattern=naming_pattern,
                 )
-            generated_files.extend(pdf_outputs)
-            records.extend(pdf_records)
-            if item_complete:
-                item_complete(pdf_path, pdf_outputs, pdf_records)
-            emit(f"Processed: {pdf_path.name}")
+            elif source_type == "video":
+                file_outputs, file_records = process_video(
+                    video_path=source_path,
+                    output_dir=output_dir,
+                    project_name=project_name,
+                    ocr_engines=ocr_engines,
+                    ocr_backend=ocr_backend,
+                    sample_seconds=video_sample_seconds,
+                    max_frames=video_max_frames,
+                    debug_image_dir=debug_image_dir,
+                    trocr_engine=trocr_engine,
+                    naming_pattern=naming_pattern,
+                    log_message=emit,
+                    item_complete=item_complete,
+                    should_cancel=should_cancel,
+                )
+            elif source_type == "sheet":
+                file_outputs, file_records = process_sheet(
+                    sheet_path=source_path,
+                    output_dir=output_dir,
+                    project_name=project_name,
+                    naming_pattern=naming_pattern,
+                    log_message=emit,
+                    item_complete=item_complete,
+                )
+            else:
+                emit(f"Skipped unsupported file: {source_path.name}")
+                continue
+            generated_files.extend(file_outputs)
+            records.extend(file_records)
+            if item_complete and source_type == "pdf":
+                item_complete(source_path, file_outputs, file_records)
+            if source_type != "video" and source_type != "sheet":
+                emit(f"Processed: {source_path.name}")
         except Exception as exc:
-            emit(f"Failed: {pdf_path.name} -> {exc}")
+            emit(f"Failed: {source_path.name} -> {exc}")
     return generated_files, records
 
 

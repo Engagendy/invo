@@ -1,6 +1,6 @@
 # ULTRA FORCE
 
-ULTRA FORCE is a local OCR system for scanned PDFs. It has:
+ULTRA FORCE is a local OCR system for scanned PDFs and source videos. It has:
 
 1. A CLI pipeline in `invoice_processor.py`
 2. A local browser app in `web_app.py`
@@ -9,13 +9,15 @@ ULTRA FORCE is a local OCR system for scanned PDFs. It has:
 The system can:
 
 1. Convert PDF pages to images
-2. Detect one or many documents on a page
-3. Run normal OCR or AI OCR
-4. Use TrOCR as a handwritten fallback
-5. Extract type, date, number, company, and amount
-6. Save original and enhanced PDF outputs
-7. Save original and enhanced PNG debug images
-8. Store projects, runs, and document metadata for later review
+2. Sample source videos and OCR transaction-style frames
+3. Detect one or many documents on a page
+4. Run normal OCR or AI OCR
+5. Use TrOCR as a handwritten fallback
+6. Extract type, date, number, company, and amount
+7. Save original and enhanced PDF outputs
+8. Save original and enhanced PNG debug images
+9. Store projects, runs, and document metadata for later review
+10. Track source mode, source origin, and source timestamp per stored result
 
 ## Files
 
@@ -65,6 +67,7 @@ By default, ULTRA FORCE stores app data in the user profile:
 That includes:
 
 - `ultra_force.db`
+- downloaded optional models under `models/`
 
 If you want PostgreSQL instead of SQLite, set:
 
@@ -132,7 +135,29 @@ ULTRA_FORCE/
 ```
 
 Bundled PaddleOCR model files should live under `models/official_models/`.
-Bundled TrOCR cache files should live under `models/huggingface/hub/`.
+Bundled TrOCR model files now live under `models/trocr/`.
+
+## Source Modes
+
+Projects can now run in:
+
+- `pdf`: process a folder of PDFs
+- `video`: process a single local source video and extract purchase-style rows with timestamps
+
+For video mode, configure:
+
+- `Video File`
+- `Video Sample Every N Seconds`
+- `Video Max Sampled Frames`
+
+Video OCR stores:
+
+- source type
+- source origin
+- source timestamp
+- extracted row text
+
+The first video milestone is designed for scrolling purchase or transaction history clips such as Tabby-, Amazon-, or WhatsApp-shared payment history videos.
 
 ## Release Builds
 

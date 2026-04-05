@@ -169,6 +169,8 @@ function fields() {
     save_text: el("saveText").checked,
     use_angle_cls: el("useAngleCls").checked,
     move_processed_source: el("moveProcessedSource").checked,
+    video_sample_seconds: Number(el("videoSampleSeconds").value),
+    video_max_frames: Number(el("videoMaxFrames").value),
     excel_name: el("excelName").value.trim(),
   };
 }
@@ -192,6 +194,8 @@ function emptyProjectSettings() {
     save_text: true,
     use_angle_cls: true,
     move_processed_source: false,
+    video_sample_seconds: 2,
+    video_max_frames: 120,
     excel_name: "document_summary.xlsx",
   };
 }
@@ -219,6 +223,8 @@ function applySettings(settings) {
   el("saveText").checked = merged.save_text;
   el("useAngleCls").checked = merged.use_angle_cls;
   el("moveProcessedSource").checked = merged.move_processed_source;
+  el("videoSampleSeconds").value = merged.video_sample_seconds;
+  el("videoMaxFrames").value = merged.video_max_frames;
   el("excelName").value = merged.excel_name;
   updateNamingPreview();
 }
@@ -499,6 +505,8 @@ function renderProjectDetail() {
     ["Export Mode", settings.export_image_mode],
     ["Language", settings.lang],
     ["DPI", String(settings.dpi)],
+    ["Video Sample Seconds", String(settings.video_sample_seconds)],
+    ["Video Max Frames", String(settings.video_max_frames)],
     ["Excel", settings.excel_name],
     ["Move Processed Source", settings.move_processed_source ? "Enabled" : "Disabled"],
   ];
@@ -523,11 +531,24 @@ async function fetchJson(url, options = {}) {
     },
     ...options,
   });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.detail || "Request failed");
+  const rawText = await response.text();
+  let payload = null;
+  if (rawText) {
+    try {
+      payload = JSON.parse(rawText);
+    } catch {
+      payload = null;
+    }
   }
-  return payload;
+  if (!response.ok) {
+    const message =
+      payload?.detail ||
+      payload?.message ||
+      rawText ||
+      `Request failed (${response.status})`;
+    throw new Error(message);
+  }
+  return payload ?? {};
 }
 
 async function loadModels() {
@@ -590,6 +611,12 @@ async function pickFolder(purpose) {
   }
 }
 
+function sourceSummary(record) {
+  const kind = record.source_type || "pdf";
+  const origin = record.source_origin || "";
+  return origin ? `${kind} · ${origin}` : kind;
+}
+
 function renderJob(job) {
   setStatus(job.status);
   el("logs").textContent = job.logs.join("\n");
@@ -608,6 +635,8 @@ function renderJob(job) {
     const tr = document.createElement("tr");
     tr.className = "border-b border-[rgba(77,49,29,0.08)]";
     tr.innerHTML = `
+      <td class="px-4 py-4">${sourceSummary(record)}</td>
+      <td class="px-4 py-4">${record.source_timestamp || "-"}</td>
       <td class="px-4 py-4">${fileCell(record.output_file, record.output_file)}</td>
       <td class="px-4 py-4">${record.doc_type}</td>
       <td class="px-4 py-4">${record.date}</td>
@@ -756,6 +785,9 @@ function getFilteredHistory(documents) {
         item.company_name,
         item.amount,
         item.currency,
+        item.source_type,
+        item.source_origin,
+        item.source_timestamp,
       ]
         .join(" ")
         .toLowerCase()
@@ -804,6 +836,9 @@ function renderHistory(documents) {
     tr.innerHTML = `
       <td class="px-4 py-4"><input data-history-id="${item.id}" type="checkbox" class="history-checkbox h-4 w-4" ${state.selectedHistoryIds.has(item.id) ? "checked" : ""} /></td>
       <td class="px-4 py-4">${formatDateTime(item.created_at)}</td>
+      <td class="px-4 py-4">${item.source_type || "-"}</td>
+      <td class="px-4 py-4">${item.source_origin || "-"}</td>
+      <td class="px-4 py-4">${item.source_timestamp || "-"}</td>
       <td class="px-4 py-4">${fileLink(item.source_path, item.source_file || "Open")}</td>
       <td class="px-4 py-4">${fileLink(item.output_path, item.output_file || "Open")}</td>
       <td class="px-4 py-4">${item.doc_type}</td>
@@ -854,6 +889,8 @@ function renderDocuments(documents) {
     const tr = document.createElement("tr");
     tr.className = "border-b border-[rgba(77,49,29,0.08)]";
     tr.innerHTML = `
+      <td class="px-4 py-4">${item.source_type || "-"}</td>
+      <td class="px-4 py-4">${item.source_timestamp || "-"}</td>
       <td class="px-4 py-4">${fileLink(item.source_path, item.source_file || "Open")}</td>
       <td class="px-4 py-4">${fileLink(item.output_path, item.output_file || "Open")}</td>
       <td class="px-4 py-4">${fileLink(item.enhanced_output_path, item.enhanced_output_path ? "Enhanced PDF" : "")}</td>
@@ -969,7 +1006,12 @@ async function runJob() {
     project_id: state.selectedProjectId,
   };
   if (!payload.source_dir || !payload.output_dir || !payload.project_name) {
-    showSweetAlert("Missing Required Fields", "Source folder, output folder, and project name are required.", "error");
+    showSweetAlert("Missing Required Fields", "Output folder and project name are required. PDF mode also needs a source folder, and video mode needs a video file.", "error");
+    switchView("projectEditor");
+    return;
+  }
+  if (!payload.source_dir) {
+    showSweetAlert("Missing Source Folder", "Choose one source folder containing PDFs, videos, or sheet files.", "error");
     switchView("projectEditor");
     return;
   }

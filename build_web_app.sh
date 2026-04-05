@@ -31,18 +31,11 @@ requirements_fingerprint() {
 copy_trocr_cache() {
   local destination_base="$1"
   local normalized_model="${TROCR_MODEL_NAME//\//--}"
-  local candidate_dirs=(
-    "${HOME}/.cache/huggingface/hub/models--${normalized_model}"
-    "${HOME}/Library/Caches/huggingface/hub/models--${normalized_model}"
-  )
-
-  mkdir -p "${destination_base}/huggingface/hub"
-  for candidate in "${candidate_dirs[@]}"; do
-    if [[ -d "${candidate}" ]]; then
-      rsync -a "${candidate}" "${destination_base}/huggingface/hub/"
-      return
-    fi
-  done
+  local export_dir="${ROOT_DIR}/.build-trocr-export/${normalized_model}"
+  if [[ -d "${export_dir}" ]]; then
+    mkdir -p "${destination_base}/trocr"
+    rsync -a "${export_dir}/" "${destination_base}/trocr/${normalized_model}/"
+  fi
 }
 
 resolve_python_cmd() {
@@ -105,7 +98,7 @@ else
   echo "Reusing cached build environment"
 fi
 
-python -c "from pathlib import Path; from transformers import TrOCRProcessor, VisionEncoderDecoderModel; model='${TROCR_MODEL_NAME}'; normalized=model.replace('/', '--'); candidates=[Path.home()/'.cache'/'huggingface'/'hub'/f'models--{normalized}', Path.home()/'Library'/'Caches'/'huggingface'/'hub'/f'models--{normalized}']; existing=next((p for p in candidates if p.exists()), None); print('Reusing cached TrOCR model' if existing else 'Downloading TrOCR model'); TrOCRProcessor.from_pretrained(model); VisionEncoderDecoderModel.from_pretrained(model, use_safetensors=True)"
+python -c "from pathlib import Path; from transformers import TrOCRProcessor, VisionEncoderDecoderModel; model='${TROCR_MODEL_NAME}'; normalized=model.replace('/', '--'); export_dir=Path(r'${ROOT_DIR}')/'.build-trocr-export'/normalized; export_dir.mkdir(parents=True, exist_ok=True); existing=(export_dir/'config.json').exists() and (export_dir/'model.safetensors').exists(); print('Reusing exported TrOCR model' if existing else 'Exporting TrOCR model'); processor=TrOCRProcessor.from_pretrained(model); trocr_model=VisionEncoderDecoderModel.from_pretrained(model, use_safetensors=True); processor.save_pretrained(export_dir); trocr_model.save_pretrained(export_dir, safe_serialization=True)"
 
 PYINSTALLER_ARGS=(
   --noconfirm

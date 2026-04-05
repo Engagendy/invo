@@ -59,6 +59,8 @@ class Project(Base):
     description: Mapped[str] = mapped_column(Text, default="")
 
     source_dir: Mapped[str] = mapped_column(Text, default="")
+    source_mode: Mapped[str] = mapped_column(String(50), default="pdf")
+    video_source_path: Mapped[str] = mapped_column(Text, default="")
     output_dir: Mapped[str] = mapped_column(Text, default="")
     debug_image_dir: Mapped[str] = mapped_column(Text, default="")
     archive_source_dir: Mapped[str] = mapped_column(Text, default="")
@@ -75,6 +77,8 @@ class Project(Base):
     save_text: Mapped[bool] = mapped_column(Boolean, default=True)
     use_angle_cls: Mapped[bool] = mapped_column(Boolean, default=True)
     move_processed_source: Mapped[bool] = mapped_column(Boolean, default=False)
+    video_sample_seconds: Mapped[int] = mapped_column(Integer, default=2)
+    video_max_frames: Mapped[int] = mapped_column(Integer, default=120)
     excel_name: Mapped[str] = mapped_column(String(200), default="document_summary.xlsx")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
@@ -96,6 +100,9 @@ class DocumentRecord(Base):
     source_file: Mapped[str] = mapped_column(String(255))
     source_path: Mapped[str] = mapped_column(Text, default="")
     source_hash: Mapped[str] = mapped_column(String(64), default="")
+    source_type: Mapped[str] = mapped_column(String(50), default="pdf")
+    source_origin: Mapped[str] = mapped_column(String(120), default="pdf_upload")
+    source_timestamp: Mapped[str] = mapped_column(String(120), default="")
     output_file: Mapped[str] = mapped_column(String(255))
     output_path: Mapped[str] = mapped_column(Text, default="")
     enhanced_output_path: Mapped[str] = mapped_column(Text, default="")
@@ -109,6 +116,7 @@ class DocumentRecord(Base):
     currency: Mapped[str] = mapped_column(String(50), default="Unknown")
     confidence_score: Mapped[int] = mapped_column(Integer, default=0)
     confidence_label: Mapped[str] = mapped_column(String(32), default="low")
+    raw_text: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     project: Mapped[Project] = relationship(back_populates="documents")
@@ -126,10 +134,18 @@ def ensure_compatible_schema() -> None:
 
     if "projects" in table_names:
         project_columns = {column["name"] for column in inspector.get_columns("projects")}
+        if "source_mode" not in project_columns:
+            statements.append("ALTER TABLE projects ADD COLUMN source_mode TEXT DEFAULT 'pdf'")
+        if "video_source_path" not in project_columns:
+            statements.append("ALTER TABLE projects ADD COLUMN video_source_path TEXT DEFAULT ''")
         if "archive_source_dir" not in project_columns:
             statements.append("ALTER TABLE projects ADD COLUMN archive_source_dir TEXT DEFAULT ''")
         if "move_processed_source" not in project_columns:
             statements.append("ALTER TABLE projects ADD COLUMN move_processed_source BOOLEAN DEFAULT 0")
+        if "video_sample_seconds" not in project_columns:
+            statements.append("ALTER TABLE projects ADD COLUMN video_sample_seconds INTEGER DEFAULT 2")
+        if "video_max_frames" not in project_columns:
+            statements.append("ALTER TABLE projects ADD COLUMN video_max_frames INTEGER DEFAULT 120")
 
     if "document_records" not in table_names:
         if statements:
@@ -146,6 +162,18 @@ def ensure_compatible_schema() -> None:
         statements.append(
             "ALTER TABLE document_records ADD COLUMN source_hash TEXT DEFAULT ''"
         )
+    if "source_type" not in columns:
+        statements.append(
+            "ALTER TABLE document_records ADD COLUMN source_type TEXT DEFAULT 'pdf'"
+        )
+    if "source_origin" not in columns:
+        statements.append(
+            "ALTER TABLE document_records ADD COLUMN source_origin TEXT DEFAULT 'pdf_upload'"
+        )
+    if "source_timestamp" not in columns:
+        statements.append(
+            "ALTER TABLE document_records ADD COLUMN source_timestamp TEXT DEFAULT ''"
+        )
     if "confidence_score" not in columns:
         statements.append(
             "ALTER TABLE document_records ADD COLUMN confidence_score INTEGER DEFAULT 0"
@@ -153,6 +181,10 @@ def ensure_compatible_schema() -> None:
     if "confidence_label" not in columns:
         statements.append(
             "ALTER TABLE document_records ADD COLUMN confidence_label TEXT DEFAULT 'low'"
+        )
+    if "raw_text" not in columns:
+        statements.append(
+            "ALTER TABLE document_records ADD COLUMN raw_text TEXT DEFAULT ''"
         )
     if statements:
         with engine.begin() as connection:
