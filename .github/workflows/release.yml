@@ -66,6 +66,10 @@ jobs:
         shell: powershell
         run: choco install innosetup -y
 
+      - name: Install 7-Zip
+        shell: powershell
+        run: choco install 7zip -y
+
       - name: Build Windows Release
         shell: cmd
         run: build_release_windows.bat
