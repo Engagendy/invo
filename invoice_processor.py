@@ -16,6 +16,7 @@ import cv2
 import fitz
 import numpy as np
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import PatternFill
 from PIL import Image, ImageDraw, ImageFont
 import pytesseract
 
@@ -49,10 +50,23 @@ class ProcessedRecord:
     company_name: str
     amount: str
     currency: str
+    transaction_direction: str
     project_name: str
     confidence_score: int
     confidence_label: str
     raw_text: str
+    match_status: str = "unreviewed"
+    match_score: int = 0
+    matched_record_source_file: str = ""
+    matched_record_output_file: str = ""
+    matched_record_source_type: str = ""
+    matched_record_source_timestamp: str = ""
+    matched_record_date: str = ""
+    matched_record_number: str = ""
+    matched_record_company_name: str = ""
+    matched_record_amount: str = ""
+    matched_record_transaction_direction: str = ""
+    match_basis: str = ""
 
 
 DEFAULT_NAMING_PATTERN = (
@@ -1523,9 +1537,22 @@ def write_excel_summary(records: Sequence[ProcessedRecord], output_path: Path) -
         "CompanyName",
         "Amount",
         "Currency",
+        "TransactionDirection",
         "ProjectName",
         "ConfidenceScore",
         "ConfidenceLabel",
+        "MatchStatus",
+        "MatchScore",
+        "MatchedRecordSourceFile",
+        "MatchedRecordOutputFile",
+        "MatchedRecordSourceType",
+        "MatchedRecordSourceTimestamp",
+        "MatchedRecordDate",
+        "MatchedRecordNumber",
+        "MatchedRecordCompanyName",
+        "MatchedRecordAmount",
+        "MatchedRecordTransactionDirection",
+        "MatchBasis",
         "RawText",
     ]
     sheet.append(headers)
@@ -1545,13 +1572,365 @@ def write_excel_summary(records: Sequence[ProcessedRecord], output_path: Path) -
                 record.company_name,
                 record.amount,
                 record.currency,
+                record.transaction_direction,
                 record.project_name,
                 record.confidence_score,
                 record.confidence_label,
+                record.match_status,
+                record.match_score,
+                record.matched_record_source_file,
+                record.matched_record_output_file,
+                record.matched_record_source_type,
+                record.matched_record_source_timestamp,
+                record.matched_record_date,
+                record.matched_record_number,
+                record.matched_record_company_name,
+                record.matched_record_amount,
+                record.matched_record_transaction_direction,
+                record.match_basis,
                 record.raw_text,
             ]
         )
+    bank_sheet = workbook.create_sheet("Bank Reconciliation")
+    bank_headers = [
+        "Status",
+        "MatchScore",
+        "Date",
+        "CompanyName",
+        "Amount",
+        "Currency",
+        "TransactionDirection",
+        "Number",
+        "SourceFile",
+        "SourceTimestamp",
+        "MatchedRecordSourceFile",
+        "MatchedRecordOutputFile",
+        "MatchedRecordSourceType",
+        "MatchedRecordSourceTimestamp",
+        "MatchedRecordDate",
+        "MatchedRecordNumber",
+        "MatchedRecordCompanyName",
+        "MatchedRecordAmount",
+        "MatchedRecordTransactionDirection",
+        "MatchBasis",
+        "RawText",
+    ]
+    bank_sheet.append(bank_headers)
+    fill_by_status = {
+        "matched": PatternFill(fill_type="solid", fgColor="C6EFCE"),
+        "missing_receipt": PatternFill(fill_type="solid", fgColor="FFC7CE"),
+        "not_applicable": PatternFill(fill_type="solid", fgColor="D9D9D9"),
+    }
+    for record in records:
+        if record.source_type != "sheet" or record.doc_type != "BankTransaction":
+            continue
+        bank_sheet.append(
+            [
+                record.match_status,
+                record.match_score,
+                record.date,
+                record.company_name,
+                record.amount,
+                record.currency,
+                record.transaction_direction,
+                record.number,
+                record.source_file,
+                record.source_timestamp,
+                record.matched_record_source_file,
+                record.matched_record_output_file,
+                record.matched_record_source_type,
+                record.matched_record_source_timestamp,
+                record.matched_record_date,
+                record.matched_record_number,
+                record.matched_record_company_name,
+                record.matched_record_amount,
+                record.matched_record_transaction_direction,
+                record.match_basis,
+                record.raw_text,
+            ]
+        )
+        fill = fill_by_status.get(record.match_status)
+        if fill:
+            for cell in bank_sheet[bank_sheet.max_row]:
+                cell.fill = fill
     workbook.save(output_path)
+
+
+MATCH_TEXT_STOP_WORDS = {
+    "aed",
+    "are",
+    "abu",
+    "dhabi",
+    "dubai",
+    "sharjah",
+    "alain",
+    "al",
+    "transaction",
+    "transactions",
+    "transfer",
+    "transfers",
+    "trf",
+    "mbtrf",
+    "mobn",
+    "from",
+    "to",
+    "out",
+    "within",
+    "charges",
+    "incl",
+    "vat",
+    "debit",
+    "credit",
+    "payment",
+    "paymnt",
+    "received",
+    "top",
+    "up",
+    "reference",
+    "number",
+    "card",
+    "creditcard",
+    "purchase",
+    "purchaseepp",
+    "thank",
+    "you",
+    "thankyou",
+    "current",
+    "account",
+    "cash",
+    "deposit",
+    "cheque",
+    "salary",
+    "profit",
+    "reversal",
+    "fee",
+    "fees",
+    "wallet",
+    "branch",
+    "site",
+}
+RECEIPT_NOT_REQUIRED_PATTERNS = (
+    r"\btransfer\b",
+    r"\bmbtrf\b",
+    r"\bmobn\b",
+    r"\bpayment received\b",
+    r"\btop up\b",
+    r"\bcashback\b",
+    r"\bcheque deposit\b",
+    r"\bcash deposit\b",
+    r"\bsalary transfer\b",
+    r"\bprofit credit\b",
+    r"\breversal\b",
+    r"\bcredit card paym",
+    r"\batm wdl\b",
+    r"\bfee\b",
+    r"\bcharges?\b",
+)
+
+
+def amount_to_float(value: str) -> Optional[float]:
+    cleaned = normalize_whitespace(str(value or "")).replace(",", "")
+    if not cleaned or cleaned == "Unknown":
+        return None
+    cleaned = cleaned.replace("AED", "").replace("aed", "").strip()
+    try:
+        return abs(float(cleaned))
+    except ValueError:
+        return None
+
+
+def parse_sheet_transaction_direction(row: dict[str, Any]) -> str:
+    def numeric(value: Any) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        cleaned = str(value).replace(",", "").strip()
+        cleaned = cleaned.replace("AED", "").replace("aed", "").strip()
+        cleaned = cleaned.replace("CR", "").replace("cr", "").strip()
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+
+    for key in ("debit", "withdrawal", "dr"):
+        value = numeric(row.get(key))
+        if value is not None and abs(value) > 0:
+            return "debit"
+    for key in ("credit", "deposit", "cr"):
+        value = numeric(row.get(key))
+        if value is not None and abs(value) > 0:
+            return "credit"
+    amount_value = numeric(row.get("amount"))
+    if amount_value is not None:
+        if amount_value < 0:
+            return "debit"
+        if amount_value > 0:
+            return "credit"
+    return "unknown"
+
+
+def parse_record_date(value: str) -> Optional[datetime]:
+    cleaned = normalize_whitespace(str(value or ""))
+    if not cleaned or cleaned == "Unknown":
+        return None
+    try:
+        return datetime.strptime(cleaned, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def normalize_match_tokens(value: str) -> List[str]:
+    normalized = normalize_ocr_text(normalize_whitespace(value)).lower()
+    normalized = re.sub(r"https?://\S+", " ", normalized)
+    tokens = re.findall(r"[a-z]{2,}", normalized)
+    return [token for token in tokens if token not in MATCH_TEXT_STOP_WORDS]
+
+
+def vendor_similarity(left: str, right: str) -> float:
+    left_tokens = normalize_match_tokens(left)
+    right_tokens = normalize_match_tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    left_joined = " ".join(left_tokens)
+    right_joined = " ".join(right_tokens)
+    sequence_score = SequenceMatcher(None, left_joined, right_joined).ratio()
+    left_set = set(left_tokens)
+    right_set = set(right_tokens)
+    overlap_score = len(left_set & right_set) / max(len(left_set), len(right_set))
+    containment_score = 1.0 if (left_joined in right_joined or right_joined in left_joined) else 0.0
+    return max(sequence_score, overlap_score, containment_score)
+
+
+def bank_transaction_requires_receipt(record: ProcessedRecord) -> Tuple[bool, str]:
+    if record.transaction_direction == "credit":
+        return False, "credit transaction"
+    haystack = normalize_ocr_text(" ".join([record.company_name, record.raw_text])).lower()
+    for pattern in RECEIPT_NOT_REQUIRED_PATTERNS:
+        if re.search(pattern, haystack, flags=re.IGNORECASE):
+            return False, f"excluded by pattern: {pattern}"
+    return True, ""
+
+
+def score_record_match(bank_record: ProcessedRecord, candidate_record: ProcessedRecord) -> Tuple[int, str]:
+    bank_amount = amount_to_float(bank_record.amount)
+    candidate_amount = amount_to_float(candidate_record.amount)
+    if bank_amount is None or candidate_amount is None:
+        return 0, "amount missing"
+
+    amount_delta = abs(bank_amount - candidate_amount)
+    if amount_delta <= 0.05:
+        amount_score = 55
+        amount_reason = "amount exact"
+    elif amount_delta <= 1.0:
+        amount_score = 35
+        amount_reason = "amount close"
+    else:
+        return 0, "amount mismatch"
+
+    similarity = vendor_similarity(bank_record.company_name, candidate_record.company_name)
+    if similarity < 0.35:
+        return 0, f"vendor weak {similarity:.2f}"
+    vendor_score = int(round(similarity * 30))
+
+    date_score = 0
+    date_reason = "date unknown"
+    bank_date = parse_record_date(bank_record.date)
+    candidate_date = parse_record_date(candidate_record.date)
+    if bank_date and candidate_date:
+        day_delta = abs((bank_date - candidate_date).days)
+        if day_delta == 0:
+            date_score = 15
+            date_reason = "same date"
+        elif day_delta <= 3:
+            date_score = 10
+            date_reason = f"{day_delta}d apart"
+        elif day_delta <= 7:
+            date_score = 5
+            date_reason = f"{day_delta}d apart"
+        else:
+            date_reason = f"{day_delta}d apart"
+
+    doc_bonus = 5 if candidate_record.doc_type in {"Invoice", "Receipt", "Purchase"} else 0
+    total_score = amount_score + vendor_score + date_score + doc_bonus
+    if amount_delta <= 0.05:
+        minimum_score = 70
+    else:
+        minimum_score = 78
+    if total_score < minimum_score:
+        return 0, f"below threshold {total_score}"
+    return total_score, f"{amount_reason}; vendor {similarity:.2f}; {date_reason}"
+
+
+def reconcile_bank_transactions(records: Sequence[ProcessedRecord]) -> None:
+    bank_indexes: List[int] = []
+    candidate_indexes: List[int] = []
+
+    for index, record in enumerate(records):
+        record.match_score = 0
+        record.matched_record_source_file = ""
+        record.matched_record_output_file = ""
+        record.matched_record_source_type = ""
+        record.matched_record_source_timestamp = ""
+        record.matched_record_date = ""
+        record.matched_record_number = ""
+        record.matched_record_company_name = ""
+        record.matched_record_amount = ""
+        record.matched_record_transaction_direction = ""
+        record.match_basis = ""
+        if record.source_type == "sheet" and record.doc_type == "BankTransaction":
+            requires_receipt, reason = bank_transaction_requires_receipt(record)
+            if requires_receipt:
+                record.match_status = "missing_receipt"
+                bank_indexes.append(index)
+            else:
+                record.match_status = "not_applicable"
+                record.match_basis = reason
+        else:
+            record.match_status = "candidate"
+            if record.source_type in {"pdf", "video"} and amount_to_float(record.amount) is not None:
+                candidate_indexes.append(index)
+
+    scored_pairs: List[Tuple[int, int, int, str]] = []
+    for bank_index in bank_indexes:
+        for candidate_index in candidate_indexes:
+            score, basis = score_record_match(records[bank_index], records[candidate_index])
+            if score > 0:
+                scored_pairs.append((score, bank_index, candidate_index, basis))
+
+    matched_banks: set[int] = set()
+    matched_candidates: set[int] = set()
+    for score, bank_index, candidate_index, basis in sorted(scored_pairs, reverse=True):
+        if bank_index in matched_banks or candidate_index in matched_candidates:
+            continue
+        bank_record = records[bank_index]
+        candidate_record = records[candidate_index]
+        bank_record.match_status = "matched"
+        bank_record.match_score = score
+        bank_record.matched_record_source_file = candidate_record.source_file
+        bank_record.matched_record_output_file = candidate_record.output_file
+        bank_record.matched_record_source_type = candidate_record.source_type
+        bank_record.matched_record_source_timestamp = candidate_record.source_timestamp
+        bank_record.matched_record_date = candidate_record.date
+        bank_record.matched_record_number = candidate_record.number
+        bank_record.matched_record_company_name = candidate_record.company_name
+        bank_record.matched_record_amount = candidate_record.amount
+        bank_record.matched_record_transaction_direction = candidate_record.transaction_direction
+        bank_record.match_basis = basis
+
+        candidate_record.match_status = "linked_to_bank"
+        candidate_record.match_score = score
+        candidate_record.matched_record_source_file = bank_record.source_file
+        candidate_record.matched_record_output_file = bank_record.output_file
+        candidate_record.matched_record_source_type = bank_record.source_type
+        candidate_record.matched_record_source_timestamp = bank_record.source_timestamp
+        candidate_record.matched_record_date = bank_record.date
+        candidate_record.matched_record_number = bank_record.number
+        candidate_record.matched_record_company_name = bank_record.company_name
+        candidate_record.matched_record_amount = bank_record.amount
+        candidate_record.matched_record_transaction_direction = bank_record.transaction_direction
+        candidate_record.match_basis = basis
+
+        matched_banks.add(bank_index)
+        matched_candidates.add(candidate_index)
 
 
 def image_to_pdf(image: np.ndarray, output_path: Path) -> None:
@@ -1995,6 +2374,7 @@ def process_video(
                     company_name=fields.company_name,
                     amount=fields.amount,
                     currency="AED" if fields.amount != "Unknown" else "Unknown",
+                    transaction_direction="debit",
                     project_name=project_name,
                     confidence_score=confidence_score,
                     confidence_label=confidence_label,
@@ -2062,11 +2442,38 @@ def parse_sheet_amount(row: dict[str, Any]) -> str:
 def normalize_sheet_headers(values: Sequence[Any]) -> dict[int, str]:
     mappings = {
         "date": {"date", "transaction date", "value date", "posting date"},
-        "description": {"description", "details", "merchant", "narration", "transaction", "remarks"},
-        "reference": {"reference", "ref", "transaction id", "transaction no", "order id", "reference no"},
-        "amount": {"amount", "transaction amount"},
-        "debit": {"debit", "withdrawal", "dr"},
-        "credit": {"credit", "deposit", "cr"},
+        "description": {
+            "description",
+            "details",
+            "merchant",
+            "narration",
+            "transaction",
+            "transaction no.",
+            "transaction no",
+            "remarks",
+            "notes",
+            "reference",
+            "type",
+            "transaction type",
+        },
+        "reference": {
+            "reference",
+            "ref",
+            "transaction id",
+            "transaction no",
+            "transaction no.",
+            "order id",
+            "reference no",
+            "reference number",
+            "reference no.",
+            "ref. number",
+            "original ref. number",
+            "sl.no",
+            "sl no",
+        },
+        "amount": {"amount", "transaction amount", "local currency"},
+        "debit": {"debit", "debit amount", "withdrawal", "dr", "debit(-)"},
+        "credit": {"credit", "credit amount", "deposit", "cr", "credit(-)"},
         "currency": {"currency", "curr"},
     }
     header_map: dict[int, str] = {}
@@ -2077,6 +2484,19 @@ def normalize_sheet_headers(values: Sequence[Any]) -> dict[int, str]:
                 header_map[index] = normalized
                 break
     return header_map
+
+
+def build_sheet_row_data(values: Sequence[Any], header_map: dict[int, str]) -> dict[str, Any]:
+    row_data: dict[str, Any] = {}
+    for column_index, normalized in header_map.items():
+        value = values[column_index] if column_index < len(values) else ""
+        if normalized not in row_data:
+            row_data[normalized] = value
+            continue
+        existing = row_data.get(normalized)
+        if existing in (None, "") and value not in (None, ""):
+            row_data[normalized] = value
+    return row_data
 
 
 def create_summary_pdf(lines: Sequence[str], output_path: Path, width: int = 1240) -> None:
@@ -2111,89 +2531,103 @@ def process_sheet(
 
     source_hash = compute_file_sha256(sheet_path)
     source_origin = "csv_import" if sheet_path.suffix.lower() == ".csv" else "excel_import"
-    rows: List[List[Any]] = []
+    sheets: List[Tuple[str, List[List[Any]]]] = []
     if sheet_path.suffix.lower() == ".csv":
         with sheet_path.open("r", encoding="utf-8-sig", newline="") as handle:
-            rows = list(csv.reader(handle))
+            sheets.append((sheet_path.stem, list(csv.reader(handle))))
     else:
         workbook = load_workbook(sheet_path, data_only=True, read_only=True)
-        worksheet = workbook.active
-        rows = [list(row) for row in worksheet.iter_rows(values_only=True)]
-
-    header_index = None
-    header_map: dict[int, str] = {}
-    for index, row in enumerate(rows[:15]):
-        current_map = normalize_sheet_headers(row)
-        if "date" in current_map.values() and ("description" in current_map.values() or "amount" in current_map.values()):
-            header_index = index
-            header_map = current_map
-            break
-    if header_index is None:
-        emit(f"Skipped sheet: {sheet_path.name} -> no recognizable header row")
-        return [], []
+        for worksheet in workbook.worksheets:
+            rows = [list(row) for row in worksheet.iter_rows(values_only=True)]
+            sheets.append((worksheet.title, rows))
 
     generated_files: List[Path] = []
     records: List[ProcessedRecord] = []
-    for row_index, values in enumerate(rows[header_index + 1 :], start=1):
-        row_data = {normalized: values[column_index] if column_index < len(values) else "" for column_index, normalized in header_map.items()}
-        raw_text = " | ".join(normalize_whitespace(str(value or "")) for value in values if value not in (None, ""))
-        if not raw_text.strip():
+    recognized_sheet = False
+    for sheet_name, rows in sheets:
+        header_index = None
+        header_map: dict[int, str] = {}
+        for index, row in enumerate(rows[:15]):
+            current_map = normalize_sheet_headers(row)
+            if "date" in current_map.values() and ("description" in current_map.values() or "amount" in current_map.values()):
+                header_index = index
+                header_map = current_map
+                recognized_sheet = True
+                break
+        if header_index is None:
+            emit(f"Skipped sheet tab: {sheet_path.name} [{sheet_name}] -> no recognizable header row")
             continue
-        fields = DocumentFields(
-            doc_type="BankTransaction",
-            date=parse_sheet_date(row_data.get("date")),
-            number=normalize_whitespace(str(row_data.get("reference") or "")) or "Unknown",
-            company_name=normalize_whitespace(str(row_data.get("description") or ""))[:120] or "Unknown",
-            amount=parse_sheet_amount(row_data),
-        )
-        confidence_score, confidence_label = compute_confidence(fields)
-        filename = build_output_name(fields, project_name, naming_pattern)
-        output_path = output_dir / filename
-        duplicate_counter = 1
-        while output_path.exists():
-            output_path = output_dir / (
-                filename[:-4] + f"_row{row_index}_{duplicate_counter}.pdf"
+        for row_index, values in enumerate(rows[header_index + 1 :], start=1):
+            row_data = build_sheet_row_data(values, header_map)
+            raw_text = " | ".join(normalize_whitespace(str(value or "")) for value in values if value not in (None, ""))
+            if not raw_text.strip():
+                continue
+            fields = DocumentFields(
+                doc_type="BankTransaction",
+                date=parse_sheet_date(row_data.get("date")),
+                number=normalize_whitespace(str(row_data.get("reference") or "")) or "Unknown",
+                company_name=normalize_whitespace(str(row_data.get("description") or ""))[:120] or "Unknown",
+                amount=parse_sheet_amount(row_data),
             )
-            duplicate_counter += 1
+            if fields.date == "Unknown" and fields.company_name == "Unknown" and fields.amount == "Unknown":
+                continue
+            confidence_score, confidence_label = compute_confidence(fields)
+            filename = build_output_name(fields, project_name, naming_pattern)
+            output_path = output_dir / filename
+            duplicate_counter = 1
+            sheet_suffix = sanitize_filename_part(sheet_name)
+            while output_path.exists():
+                output_path = output_dir / (
+                    filename[:-4] + f"_{sheet_suffix}_row{row_index}_{duplicate_counter}.pdf"
+                )
+                duplicate_counter += 1
 
-        create_summary_pdf(
-            [
-                f"Source: {sheet_path.name}",
-                f"Row: {row_index}",
-                f"Type: {fields.doc_type}",
-                f"Date: {fields.date}",
-                f"Reference: {fields.number}",
-                f"Company: {fields.company_name}",
-                f"Amount: {fields.amount}",
-                f"Raw: {raw_text}",
-            ],
-            output_path,
-        )
-        generated_files.append(output_path)
-        record = ProcessedRecord(
-            source_file=sheet_path.name,
-            source_path=str(sheet_path.resolve()),
-            source_hash=source_hash,
-            source_type="sheet",
-            source_origin=source_origin,
-            source_timestamp=f"row:{row_index}",
-            output_file=output_path.name,
-            doc_type=fields.doc_type,
-            date=fields.date,
-            number=fields.number,
-            company_name=fields.company_name,
-            amount=fields.amount,
-            currency=normalize_whitespace(str(row_data.get("currency") or "")) or ("AED" if fields.amount != "Unknown" else "Unknown"),
-            project_name=project_name,
-            confidence_score=confidence_score,
-            confidence_label=confidence_label,
-            raw_text=raw_text,
-        )
-        records.append(record)
-        if item_complete:
-            item_complete(sheet_path, [output_path], [record])
+            create_summary_pdf(
+                [
+                    f"Source: {sheet_path.name}",
+                    f"Sheet: {sheet_name}",
+                    f"Row: {row_index}",
+                    f"Type: {fields.doc_type}",
+                    f"Date: {fields.date}",
+                    f"Reference: {fields.number}",
+                    f"Company: {fields.company_name}",
+                    f"Amount: {fields.amount}",
+                    f"Raw: {raw_text}",
+                ],
+                output_path,
+            )
+            generated_files.append(output_path)
+            record = ProcessedRecord(
+                source_file=sheet_path.name,
+                source_path=str(sheet_path.resolve()),
+                source_hash=source_hash,
+                source_type="sheet",
+                source_origin=source_origin,
+                source_timestamp=f"{sheet_name}:row:{row_index}",
+                output_file=output_path.name,
+                doc_type=fields.doc_type,
+                date=fields.date,
+                number=fields.number,
+                company_name=fields.company_name,
+                amount=fields.amount,
+                currency=normalize_whitespace(str(row_data.get("currency") or "")) or ("AED" if fields.amount != "Unknown" else "Unknown"),
+                transaction_direction=parse_sheet_transaction_direction(row_data),
+                project_name=project_name,
+                confidence_score=confidence_score,
+                confidence_label=confidence_label,
+                raw_text=f"Sheet: {sheet_name} | {raw_text}",
+            )
+            records.append(record)
+            if item_complete:
+                item_complete(sheet_path, [output_path], [record])
 
-    emit(f"Processed sheet: {sheet_path.name}")
+        emit(f"Processed sheet tab: {sheet_path.name} [{sheet_name}]")
+
+    if not recognized_sheet:
+        emit(f"Skipped sheet: {sheet_path.name} -> no recognizable header row")
+        return [], []
+
+    emit(f"Processed sheet workbook: {sheet_path.name}")
     return generated_files, records
 
 
@@ -2273,6 +2707,7 @@ def process_pdf(
                         company_name=fields.company_name,
                         amount=fields.amount,
                         currency="AED" if fields.amount != "Unknown" else "Unknown",
+                        transaction_direction="debit",
                         project_name=project_name,
                         confidence_score=confidence_score,
                         confidence_label=confidence_label,
@@ -2542,6 +2977,7 @@ def main() -> None:
         trocr_model=args.trocr_model,
         naming_pattern=args.naming_pattern,
     )
+    reconcile_bank_transactions(records)
     write_excel_summary(records, output_dir / args.excel_name)
     print(f"Generated {len(generated_files)} file(s) in {output_dir}")
 

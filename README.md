@@ -1,78 +1,144 @@
 # ULTRA FORCE
 
-ULTRA FORCE is a local OCR system for scanned PDFs and source videos. It has:
+ULTRA FORCE is a local OCR, reconciliation, review, and construction-accounting workspace for Ultra Force. It ingests PDFs, videos, and multi-sheet bank statements, extracts structured transaction and document data, links supporting evidence, and pushes that data into company-level accounting and project-costing workflows.
 
-1. A CLI pipeline in `invoice_processor.py`
-2. A local browser app in `web_app.py`
-3. Per-user projects, saved OCR settings, and stored document history in `web_db.py`
+The repo now includes:
 
-The system can:
+1. OCR and ingestion pipeline in `invoice_processor.py`
+2. Local FastAPI browser app in `web_app.py`
+3. Persistent data models in `web_db.py`
+4. Browser UI in `web/index.html` and `web/assets/app.js`
 
-1. Convert PDF pages to images
-2. Sample source videos and OCR transaction-style frames
-3. Detect one or many documents on a page
-4. Run normal OCR or AI OCR
-5. Use TrOCR as a handwritten fallback
-6. Extract type, date, number, company, and amount
-7. Save original and enhanced PDF outputs
-8. Save original and enhanced PNG debug images
-9. Store projects, runs, and document metadata for later review
-10. Track source mode, source origin, and source timestamp per stored result
+## What It Does
 
-## Files
+### OCR And Ingestion
 
-- `invoice_processor.py`: main processing script
-- `requirements.txt`: Windows-oriented packaged AI dependencies
-- `requirements-normal.txt`: cross-platform normal OCR dependencies
-- `requirements-ai.txt`: AI extras including TrOCR dependencies
-- `requirements-web.txt`: local browser UI backend dependencies
-- `setup_ai_env.sh`: macOS/Linux Python 3.11 AI environment bootstrap
-- `setup_ai_env.bat`: Windows Python 3.11 AI environment bootstrap
-- `web_app.py`: local FastAPI server and job runner for the browser UI
-- `web_db.py`: users, projects, sessions, and OCR document metadata storage
-- `run_web_app.sh`: launch the local browser app on macOS/Linux
-- `run_web_app.bat`: launch the local browser app on Windows
-- `build_web_app.sh`: package the local web app for macOS/Linux
-- `build_web_app.bat`: package the local web app for Windows
-- `WEBAPP_PLAN.md`: local web app and packaging plan
-- `app_paths.py`: runtime paths for bundled assets, models, and user data
+- OCR PDFs with normal OCR, AI OCR, and TrOCR handwritten fallback
+- Sample videos and extract transaction-like rows from frames
+- Parse multi-sheet Excel bank statements
+- Detect multiple receipt regions on a page
+- Track source type, source origin, source file, and source timestamp
+- Save processed outputs and debug assets
+
+### Reconciliation And Review
+
+- Reconcile bank transactions against PDF and video extracted documents
+- Flag `matched`, `missing_receipt`, and `not_applicable` bank rows
+- Show linked record detail with output preview
+- Provide `Reconciliation`, `Review Queue`, `Exceptions`, `Feedback`, and `Evidence` workspaces
+- Persist review notes, comments, assignments, and activity history
+
+### Dashboards And Analytics
+
+- Server-side bank analytics and drill-down
+- Monthly debit, credit, coverage, unresolved aging, and exception views
+- Filterable dashboard drill-down with server-side pagination
+- Processed resources center with diagnostics, quality scoring, source activity, and rerun
+
+### Company And Accounting
+
+- Company directory and company settings
+- Company-level chart of accounts
+- Quarterly accounting periods and draft-quarter seeding
+- Rule-based journal draft generation from parsed data
+- Manual journals
+- Posted journal entries, trial balance, and general ledger
+- Supplier and customer masters
+- AP/AR aging and settlement allocation
+- Company auto-posting rules
+
+### Construction Accounting
+
+- Company projects with job code, client, site, contract, and budget fields
+- Cost centers and cost codes
+- Job costing summary by project
+- Billing events for claims, milestones, variations, retention, debit notes, and credit notes
+- Purchase orders, receipts, and procurement control
+- Procurement exception queue with review state and assignment
+
+## Main Workspaces
+
+### Project-Level
+
+- `Overview`
+- `Reconciliation`
+- `Review Queue`
+- `Exceptions`
+- `Feedback`
+- `Vendors`
+- `Rules`
+- `Tags`
+- `Stored Documents`
+- `Previous Results`
+- `Processed Resources`
+- `Search`
+- `Evidence`
+- `Activity`
+- `Close`
+
+### Top-Level
+
+- `Companies`
+- `Accounting`
+
+## Data Model Direction
+
+The product now follows this accounting boundary:
+
+- company owns accounting books
+- project belongs to company
+- project is used for job costing and operational attribution
+- documents, journal lines, AP/AR, and procurement records can reference both company accounting structures and project dimensions
+
+This means:
+
+- chart of accounts is company-level
+- accounting periods are company-level
+- journals, trial balance, and ledger are company-level
+- project code, cost center, and cost code are dimensions
 
 ## Python Setup
 
-Install normal OCR dependencies:
+ULTRA FORCE currently works best with two local virtual environments:
 
-```powershell
+- `.venv`: lightweight environment for web stack and normal OCR
+- `.venv311`: Python `3.11` environment for AI OCR, PaddleOCR, and TrOCR
+
+Recommended setup:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements-normal.txt
 pip install -r requirements-web.txt
 ```
 
-Recommended Python version for PaddleOCR packaging on Windows:
-
-```text
-Python 3.10 or 3.11
+```bash
+./setup_ai_env.sh
+./.venv311/bin/pip install -r requirements-web.txt
 ```
 
-The `normal` backend works on newer Python versions.
-The `ai` backend still requires a compatible Python 3.10 or 3.11 setup.
-ULTRA FORCE uses the TrOCR safetensors path and keeps a platform-aware Torch pin because `torch==2.6.0` is not published for some Intel macOS Python 3.11 environments.
+Windows:
 
-## Storage
+```powershell
+py -3.11 -m venv .venv311
+setup_ai_env.bat
+.\.venv311\Scripts\pip install -r requirements-web.txt
+```
 
-By default, ULTRA FORCE stores app data in the user profile:
+### Recommended Runtime
 
-- macOS: `~/Library/Application Support/ULTRA_FORCE`
-- Linux: `~/.ultra_force`
-- Windows: `%APPDATA%\ULTRA_FORCE`
-
-That includes:
-
-- `ultra_force.db`
-- downloaded optional models under `models/`
-
-If you want PostgreSQL instead of SQLite, set:
+If you want the browser app with full AI OCR and TrOCR support, run it from `.venv311`:
 
 ```bash
-DATABASE_URL=postgresql+psycopg://user:password@host:5432/ultra_force
+./.venv311/bin/python web_app.py
+```
+
+Windows:
+
+```powershell
+.\.venv311\Scripts\python web_app.py
 ```
 
 ## OCR Runtime Notes
@@ -81,89 +147,86 @@ This version uses:
 
 - `PyMuPDF` to render PDF pages
 - `PaddleOCR` for AI OCR
-- `pytesseract` for a faster normal OCR mode
-- `RapidOCR` as a bundled fallback when Tesseract is missing
-- `OpenCV` for splitting multiple receipts on a page
+- `pytesseract` for faster normal OCR when available
+- `RapidOCR` as fallback when Tesseract is missing
+- `OpenCV` for document splitting
 
-There is no dependency on Tesseract or Poppler anymore.
-The `ai` backend does not depend on Tesseract or Poppler.
-The `normal` backend uses Tesseract if available and falls back to RapidOCR if Tesseract is missing.
+`ai` OCR and `trocr` require Python `3.10` or `3.11`.
 
-### PaddlePaddle
+### TrOCR Model Detection
 
-`PaddleOCR` also requires `paddlepaddle`.
+The app treats a TrOCR model as installed if it exists in either:
 
-Install CPU runtime:
+- `models/trocr/`
+- `models/huggingface/hub/`
 
-```powershell
-pip install paddlepaddle==3.2.0 paddleocr==3.3.3
-```
+That means previously downloaded Hugging Face cache entries such as `microsoft/trocr-large-handwritten` are treated as installed without requiring another download.
 
-On macOS, the currently available PaddlePaddle build may differ. Use:
+## Storage
+
+By default, app data is stored in the user profile:
+
+- macOS: `~/Library/Application Support/ULTRA_FORCE`
+- Linux: `~/.ultra_force`
+- Windows: `%APPDATA%\\ULTRA_FORCE`
+
+That includes:
+
+- `ultra_force.db`
+- downloaded models under `models/`
+
+If you want PostgreSQL instead of SQLite:
 
 ```bash
-./setup_ai_env.sh
+DATABASE_URL=postgresql+psycopg://user:password@host:5432/ultra_force
 ```
 
-On Windows, use:
+## Source Types
 
-```powershell
-setup_ai_env.bat
-```
+Projects can process:
 
-If you want GPU acceleration, use the matching PaddlePaddle GPU package for your CUDA version from the official Paddle installation guide.
+- `pdf`
+- `video`
+- `sheet`
 
-### First Run Model Download
+Bank workbooks support multiple sheets in the same Excel file. Each sheet is inspected independently and imported when a recognizable bank-statement header is found.
 
-On the first run, PaddleOCR may download detection and recognition model files.
-
-If you want a fully bundled app for sharing, run the app once on your machine, locate the downloaded PaddleOCR model directories, and package those model files with the app.
-The build scripts also copy cached Paddle models into the packaged `models/official_models/` folder when available.
-
-## Bundled App Layout
-
-The packaging scripts create a distributable local app and place beside the executable:
-
-```text
-ULTRA_FORCE/
-  ULTRA_FORCE(.exe)
-  web/
-  models/
-  source/
-  processed/
-  debug_images/
-```
-
-Bundled PaddleOCR model files should live under `models/official_models/`.
-Bundled TrOCR model files now live under `models/trocr/`.
-
-## Source Modes
-
-Projects can now run in:
-
-- `pdf`: process a folder of PDFs
-- `video`: process a single local source video and extract purchase-style rows with timestamps
-
-For video mode, configure:
-
-- `Video File`
-- `Video Sample Every N Seconds`
-- `Video Max Sampled Frames`
-
-Video OCR stores:
+Video extraction stores:
 
 - source type
 - source origin
 - source timestamp
-- extracted row text
+- extracted row content
 
-The first video milestone is designed for scrolling purchase or transaction history clips such as Tabby-, Amazon-, or WhatsApp-shared payment history videos.
+## Accounting And Procurement Notes
 
-## Release Builds
+The current accounting system supports:
+
+- company chart of accounts
+- accounting periods with `open`, `closed`, and `locked`
+- auto-posting rules
+- journal drafts from parsed data
+- manual journals
+- posting and unposting
+- trial balance
+- general ledger
+- AP/AR aging
+- settlement allocation
+- purchase orders
+- goods/service receipts
+- procurement control
+- procurement exceptions
+
+Current automation level:
+
+- parsed records can generate journal drafts automatically through seeded and manual rules
+- undated drafts are skipped during posting
+- missing draft quarters can be seeded automatically
+- account displays now use `code · name` format in the accounting UI
+
+## Packaging
 
 ### macOS
-
-Build a native macOS release:
 
 ```bash
 bash build_release_mac.sh
@@ -174,15 +237,7 @@ Outputs:
 - `dist/ULTRA_FORCE-macos-<version>.dmg`
 - `dist/ULTRA_FORCE-macos-<version>-sha256.txt`
 
-Install flow for customers:
-
-1. Open the DMG
-2. Drag `ULTRA_FORCE.app` to `Applications`
-3. Launch `ULTRA FORCE`
-
 ### Windows
-
-Build a Windows release on a Windows machine:
 
 ```powershell
 build_release_windows.bat
@@ -190,318 +245,22 @@ build_release_windows.bat
 
 Outputs:
 
-- `dist\ULTRA_FORCE-windows-<version>.zip`
-- `dist\ULTRA_FORCE-windows-<version>-setup.exe`
-- `dist\ULTRA_FORCE-windows-<version>-sha256.txt`
+- `dist\\ULTRA_FORCE-windows-<version>.zip`
+- `dist\\ULTRA_FORCE-windows-<version>-setup.exe`
+- `dist\\ULTRA_FORCE-windows-<version>-sha256.txt`
 
-Customer install flow:
+## Roadmaps
 
-1. Download `ULTRA_FORCE-windows-<version>-setup.exe`
-2. Run the installer
-3. Launch `ULTRA FORCE` from Start Menu or Desktop shortcut
+- Product roadmap: `ROADMAP.md`
+- Construction accounting roadmap: `CONSTRUCTION_ACCOUNTING_ROADMAP.md`
 
-## Release Size Notes
+## Current Gaps
 
-The main bundle-size drivers are:
+The app is now beyond OCR-only, but it is still evolving toward a fuller accounting system. The next major accounting layers are:
 
-- PyInstaller collection of large OCR and ML runtimes
-- PaddleOCR model files
-- bundled TrOCR model cache
-
-This repo now reduces release size by default through:
-
-- bundling only `microsoft/trocr-base-handwritten`
-- not warming or copying `trocr-large-handwritten`
-- copying only the selected Hugging Face model cache instead of the full cache
-- narrowing the PyInstaller Transformer collection to the TrOCR path instead of `--collect-all transformers`
-
-If you want to override the bundled handwritten model during build:
-
-```bash
-TROCR_MODEL_NAME=microsoft/trocr-base-handwritten bash build_release_mac.sh
-```
-
-```powershell
-set TROCR_MODEL_NAME=microsoft/trocr-base-handwritten
-build_release_windows.bat
-```
-
-## Folder Layout
-
-Create these folders under the working directory:
-
-```text
-source/
-processed/
-```
-
-Put source PDFs into `source/`.
-
-## Usage
-
-Basic run:
-
-```powershell
-python invoice_processor.py --source source --processed processed --project-name MyProject --ocr-backend ai
-```
-
-Recommended Windows setup with Python 3.11:
-
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-python invoice_processor.py --source source --processed processed --project-name MyProject
-```
-
-With Arabic or another PaddleOCR language code:
-
-```powershell
-python invoice_processor.py --source source --processed processed --project-name MyProject --lang ar
-```
-
-Faster OCR mode with Tesseract:
-
-```powershell
-python invoice_processor.py --source source --processed processed --project-name MyProject --ocr-backend normal --tesseract-cmd "C:\Program Files\Tesseract-OCR\tesseract.exe"
-```
-
-Faster OCR mode with automatic fallback:
-
-```powershell
-python invoice_processor.py --source source --processed processed --project-name MyProject --ocr-backend normal
-```
-
-Normal OCR with handwritten fallback:
-
-```powershell
-python invoice_processor.py --source source_single --processed processed_single --project-name MyProject --single-item-per-page --ocr-backend normal --handwriting-backend trocr
-```
-
-Single-item rename mode for one document per page:
-
-```powershell
-python invoice_processor.py --source source_single --processed processed_single --project-name MyProject --single-item-per-page --ocr-backend normal
-```
-
-Export cleaned OCR images as PDFs:
-
-```powershell
-python invoice_processor.py --source source_single --processed processed_single --project-name MyProject --single-item-per-page --ocr-backend normal --export-image-mode enhanced
-```
-
-Export both original and enhanced PDFs:
-
-```powershell
-python invoice_processor.py --source source_single --processed processed_single --project-name MyProject --single-item-per-page --ocr-backend normal --export-image-mode both
-```
-
-Export original and enhanced PNG debug images:
-
-```powershell
-python invoice_processor.py --source source_single --processed processed_single --project-name MyProject --single-item-per-page --ocr-backend normal --debug-image-dir debug_images
-```
-
-## Web App
-
-The project now includes a local browser UI backed by FastAPI.
-
-Features in the current web app:
-
-- login and registration
-- per-user projects
-- saved project configuration
-- default naming pattern auto-filled in the UI
-- choose source folder
-- choose output folder
-- choose debug image folder
-- configure project name
-- choose OCR backend and OCR profile
-- choose handwritten fallback and TrOCR model
-- configure export mode
-- configure output naming pattern
-- keep document history per project
-- view original and enhanced PDFs/images from stored metadata
-- run jobs and watch logs/results live
-- runtime diagnostics and first-run setup guidance
-
-Launch on macOS/Linux:
-
-```bash
-./run_web_app.sh
-```
-
-Launch on Windows:
-
-```powershell
-run_web_app.bat
-```
-
-## Automated Releases
-
-The repo now includes GitHub Actions automation in [.github/workflows/release.yml](/Users/engagendy/RiderProjects/invo/.github/workflows/release.yml).
-
-It builds:
-
-- macOS DMG: `dist/ULTRA_FORCE-macos-<version>.dmg`
-- macOS checksum: `dist/ULTRA_FORCE-macos-<version>-sha256.txt`
-- Windows zip: `dist/ULTRA_FORCE-windows-<version>.zip`
-- Windows installer: `dist/ULTRA_FORCE-windows-<version>-setup.exe`
-- Windows checksum: `dist/ULTRA_FORCE-windows-<version>-sha256.txt`
-
-Triggers:
-
-- manual run with `workflow_dispatch`
-- automatic run when you push a tag like `v1.0.0`
-
-On tagged builds, the workflow publishes the generated files as GitHub release assets automatically.
-
-Local release commands:
-
-```bash
-bash build_release_mac.sh
-```
-
-Native Apple Silicon macOS build:
-
-```bash
-MAC_BUILD_ARCH=arm64 PYTHON_BIN=/opt/homebrew/bin/python3.11 bash build_release_mac.sh
-```
-
-If the machine is currently running under Rosetta and `/opt/homebrew/bin/python3.11` is not installed, a true native `arm64` build is not possible yet.
-
-macOS install flow after build:
-
-- open the DMG
-- drag `ULTRA_FORCE.app` into `Applications`
-- launch `ULTRA_FORCE.app`
-
-```powershell
-build_release_windows.bat
-```
-
-Version source:
-
-- `RELEASE_VERSION` env var if set
-- otherwise the pushed Git tag such as `v1.0.0`
-- otherwise `dev` locally
-
-Windows installer:
-
-- local and CI Windows releases use [installer_windows.iss](/Users/engagendy/RiderProjects/invo/installer_windows.iss)
-- GitHub Actions installs Inno Setup automatically before building the installer
-
-Direct Python launch:
-
-```powershell
-python web_app.py
-```
-
-The server binds to:
-
-```text
-http://127.0.0.1:8765
-```
-
-Database:
-
-```text
-ultra_force.db
-```
-
-The database defaults to local SQLite for standalone installs.
-If you want PostgreSQL, set:
-
-```text
-DATABASE_URL
-```
-
-Naming pattern tokens:
-
-```text
-{doc_type} {date} {number} {company_name} {amount} {amount_aed} {project_name}
-```
-
-## Packaging
-
-Build the packaged browser app on macOS/Linux:
-
-```bash
-./build_web_app.sh
-```
-
-Build on Windows:
-
-```powershell
-build_web_app.bat
-```
-
-The build output bundles:
-
-- local Python backend executable
-- `web/` static UI assets
-- `models/` sidecar folder
-- `source/`
-- `processed/`
-- `debug_images/`
-
-With custom DPI:
-
-```powershell
-python invoice_processor.py --source source --processed processed --project-name MyProject --dpi 300
-```
-
-## Output Filename Format
-
-Each extracted item is saved as:
-
-```text
-[Type]_[Date]_[Number]_[CompanyName]_[AmountAED]_[ProjectName].pdf
-```
-
-If a field cannot be extracted, the script uses `Unknown`.
-
-Example:
-
-```text
-Invoice_2026-04-03_INV-1023_ACMETrading_125.00AED_MyProject.pdf
-```
-
-## Notes
-
-- Document splitting is contour-based using OpenCV.
-- OCR is handled by PaddleOCR, which is generally stronger than Tesseract on varied document layouts.
-- `normal` mode now tries multiple preprocessing variants for noisy photos before OCR.
-- `trocr` can be enabled as a handwritten fallback for missing fields.
-- Field extraction uses heuristics and regex, so unusual invoice formats may still require tuning.
-- The browser app is local-first and does not require a cloud service.
-- The browser app now reports runtime readiness for normal OCR, AI OCR, TrOCR, and cached models on first load.
-- If two files resolve to the same output name, the script appends page and item suffixes.
-- The first execution may take longer because OCR models may be downloaded and initialized.
-
-## Main Functions
-
-- `detect_document_regions(...)`: finds separate receipts/invoices on a scanned page
-- `extract_text(...)`: OCR step using PaddleOCR
-- `extract_fields(...)`: parses type, date, number, company, and amount
-- `process_folder(...)`: iterates through the `source` folder and writes to `processed`
-
-## Packaging
-
-For a distributable Windows app, use:
-
-```powershell
-build_app.bat
-```
-
-This expects Python 3.11 to be available through `py -3.11`.
-
-The build script will:
-
-- create a dedicated build virtual environment
-- install runtime dependencies
-- install pinned OCR dependencies and `pyinstaller`
-- build a one-folder app into `dist\InvoiceProcessor`
-- create `source` and `processed` folders in the output
-- copy cached PaddleOCR models into `dist\InvoiceProcessor\models\official_models`
+- VAT engine and tax codes
+- financial statements
+- stronger AP approval/payment workflow
+- stronger AR invoicing/collection workflow
+- close controls and accounting approvals
+- deeper construction ledgers for retention, advances, and WIP rollforward
